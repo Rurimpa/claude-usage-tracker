@@ -8,3 +8,20 @@ dist/
 build/
 output/
 *.spec
+
+# Development files
+*.txt
+!requirements.txt
+show_info.ps1
+start_claude_mcp.bat
+start_claude_rc.bat
+migrate_i18n_config.py
+docs/
+F8_F9_*.md
+usage-tracker*.md
+トレイアイコン*.md
+修正点要望.md
+引き継ぎ*.md
+議題_*.md
+
+feasibility_report.md

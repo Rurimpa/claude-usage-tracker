@@ -158,3 +158,10 @@ def make_gauge_icon(pct: float = 100.0, mode: str = "session",
                            fill=color + (GAUGE_ALPHA,))
 
     return Image.alpha_composite(bg, overlay)
+
+
+def make_gauge_large(pct: float = 100.0, mode: str = "session",
+                     size: int = 128) -> Image.Image:
+    """トレイアイコンの拡大版を生成する（ミニウィジェット・ポップアップ用）。"""
+    img = make_gauge_icon(pct=pct, mode=mode, dim=False)
+    return img.resize((size, size), Image.NEAREST)

@@ -69,6 +69,7 @@
   "open_dashboard": "Open Dashboard",
   "tray_show_usage": "Show Usage",
   "tray_open_dashboard": "Open Dashboard",
+  "tray_mini_widget": "Mini Widget",
   "tray_exit": "Exit",
   "tray_tooltip_session": "Session: {value}% remaining",
   "tray_tooltip_extra_unlimited": "Extra Usage: Unlimited",

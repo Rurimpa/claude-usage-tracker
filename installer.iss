@@ -1,11 +1,11 @@
 [Setup]
 AppName=Claude Usage Tracker
-AppVersion=3.0.0
+AppVersion=3.1.0
 AppPublisher=OpalTools
 DefaultDirName={localappdata}\ClaudeUsageTracker
 DefaultGroupName=Claude Usage Tracker
 OutputDir=output
-OutputBaseFilename=ClaudeUsageTracker_Setup_v3.0.0
+OutputBaseFilename=ClaudeUsageTracker_Setup_v3.1.0
 Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=lowest
@@ -16,7 +16,7 @@ UninstallDisplayIcon={app}\ClaudeUsageTracker.exe
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
 
 [Messages]
-japanese.WelcomeLabel2=このウィザードは Claude Usage Tracker v3.0.0 をインストールします。%n%nClaude Code のトークン消費量・使用率を可視化するツールです。%n%n続行するには「次へ」をクリックしてください。
+japanese.WelcomeLabel2=このウィザードは Claude Usage Tracker v3.1.0 をインストールします。%n%nClaude Code のトークン消費量・使用率を可視化するツールです。%n%n続行するには「次へ」をクリックしてください。
 
 [Files]
 Source: "dist\ClaudeUsageTracker\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

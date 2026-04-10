@@ -101,6 +101,7 @@ class UsageTrackerApp:
         self._scan_lock = threading.Lock()
         self._usage_client = UsageAPIClient()
         self._usage_data = None
+        self._mini_widget = None  # F-18: ミニウィジェット
 
     def run(self):
         logger.info("Usage Tracker 起動 (v%s)", config.VERSION)
@@ -247,6 +248,7 @@ class UsageTrackerApp:
 
         if self.app_gui and not self._stop_event.is_set():
             self.app_gui.after(0, self.app_gui.update_usage_status, data, None)
+            self.app_gui.after(0, self._update_mini_widget)
 
     def _update_tray_from_data(self, data: dict):
         """F-14: 3パターン分岐でトレイアイコンを更新。"""
@@ -301,6 +303,7 @@ class UsageTrackerApp:
                     self.app_gui.after(0, self.app_gui.update_usage_status, data, None)
                     self._update_tray_from_data(data)
                     self._update_tray_tooltip(data)
+                    self.app_gui.after(0, self._update_mini_widget)
                 else:
                     self.app_gui.after(0, self.app_gui.update_usage_status,
                                        None, self._usage_client.last_error)
@@ -331,9 +334,13 @@ class UsageTrackerApp:
 
             tooltip = f"Claude Usage Tracker\n{i18n.t('tray_tooltip_pending')}"
 
+            def toggle_widget(icon, item):
+                self._toggle_mini_widget()
+
             menu = pystray.Menu(
                 pystray.MenuItem(i18n.t("tray_show_usage"), on_left_click, default=True),
                 pystray.MenuItem(i18n.t("tray_open_dashboard"), self._show_dashboard),
+                pystray.MenuItem(i18n.t("tray_mini_widget"), toggle_widget),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem(i18n.t("tray_exit"), quit_app),
             )
@@ -363,36 +370,52 @@ class UsageTrackerApp:
         self.app_gui.after(0, self._create_tray_popup)
 
     def _create_tray_popup(self):
-        """F-5: 使用量ポップアップ。"""
+        """F-5/F-19/F-20: 使用量ポップアップ（ゲージ拡大+Claudeカラー）。"""
         import tkinter as tk
+        from PIL import ImageTk
+        from icons.gauge import make_gauge_large
+
+        BG = "#2c2c2c"
+        ACCENT = "#E07B39"
 
         popup = tk.Toplevel(self.app_gui)
         popup.overrideredirect(True)
         popup.attributes("-topmost", True)
-        popup.configure(bg="#2c3e50")
+        popup.configure(bg=BG)
 
         screen_w = popup.winfo_screenwidth()
         screen_h = popup.winfo_screenheight()
-        popup_w, popup_h = 360, 260
+        popup_w, popup_h = 420, 280
         popup.geometry(f"{popup_w}x{popup_h}+{screen_w - popup_w - 10}+{screen_h - popup_h - 50}")
 
-        title_frame = tk.Frame(popup, bg="#1a6b9a")
+        # タイトルバー（Claudeオレンジ）
+        title_frame = tk.Frame(popup, bg=ACCENT)
         title_frame.pack(fill=tk.X)
         tk.Label(title_frame, text="  Claude Usage Tracker", font=("Meiryo", 10, "bold"),
-                 bg="#1a6b9a", fg="white", anchor="w", pady=4).pack(fill=tk.X, padx=5)
+                 bg=ACCENT, fg="white", anchor="w", pady=4).pack(fill=tk.X, padx=5)
 
-        data = self._usage_data
-        body = tk.Frame(popup, bg="#2c3e50", padx=12, pady=8)
-        body.pack(fill=tk.BOTH, expand=True)
+        # メインコンテンツ
+        content = tk.Frame(popup, bg=BG, padx=8, pady=8)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # F-19: 左にゲージ拡大画像
+        gauge_img = make_gauge_large(pct=self._tray_pct, mode=self._tray_mode, size=128)
+        self._popup_photo = ImageTk.PhotoImage(gauge_img)
+        tk.Label(content, image=self._popup_photo, bg=BG).pack(side=tk.LEFT, padx=(4, 12))
+
+        # 右にテキスト情報
+        right = tk.Frame(content, bg=BG)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         def row(label, value, color="white"):
-            r = tk.Frame(body, bg="#2c3e50")
+            r = tk.Frame(right, bg=BG)
             r.pack(fill=tk.X, pady=2)
-            tk.Label(r, text=label, font=("Meiryo", 9), bg="#2c3e50",
-                     fg="#bdc3c7", anchor="w", width=18).pack(side=tk.LEFT)
-            tk.Label(r, text=value, font=("Meiryo", 10, "bold"), bg="#2c3e50",
+            tk.Label(r, text=label, font=("Meiryo", 9), bg=BG,
+                     fg=ACCENT, anchor="w", width=18).pack(side=tk.LEFT)
+            tk.Label(r, text=value, font=("Meiryo", 10, "bold"), bg=BG,
                      fg=color, anchor="e").pack(side=tk.RIGHT)
 
+        data = self._usage_data
         if data:
             fh = data.get("five_hour_util")
             sd = data.get("seven_day_util")
@@ -409,8 +432,7 @@ class UsageTrackerApp:
                 if fr:
                     rs = _format_reset_time(fr)
                     if rs:
-                        row("", rs, "#7f8c8d")
-
+                        row("", rs, "#888888")
             if sd is not None:
                 rem = max(0.0, 100.0 - sd)
                 c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
@@ -418,13 +440,11 @@ class UsageTrackerApp:
                 if sr:
                     rs = _format_reset_time(sr)
                     if rs:
-                        row("", rs, "#7f8c8d")
-
+                        row("", rs, "#888888")
             if sn is not None:
                 rem = max(0.0, 100.0 - sn)
                 c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
                 row(i18n.t("weekly_sonnet"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
-
             if ee:
                 if eu is None:
                     row(i18n.t("extra_usage"), i18n.t("extra_unlimited"), "#2ecc71")
@@ -433,13 +453,14 @@ class UsageTrackerApp:
                     c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
                     row(i18n.t("extra_usage"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
         else:
-            tk.Label(body, text=i18n.t("api_data_pending"),
-                     font=("Meiryo", 10), bg="#2c3e50", fg="#95a5a6").pack(pady=15)
+            tk.Label(right, text=i18n.t("api_data_pending"),
+                     font=("Meiryo", 10), bg=BG, fg="#95a5a6").pack(pady=15)
 
-        link = tk.Frame(popup, bg="#2c3e50")
+        # フッター
+        link = tk.Frame(popup, bg=BG)
         link.pack(fill=tk.X, padx=12, pady=(0, 8))
         lbl = tk.Label(link, text=f"{i18n.t('open_dashboard')} →", font=("Meiryo", 8),
-                       bg="#2c3e50", fg="#3498db", cursor="hand2")
+                       bg=BG, fg=ACCENT, cursor="hand2")
         lbl.pack(anchor="e")
         lbl.bind("<Button-1>", lambda e: (popup.destroy(), self._show_dashboard()))
 
@@ -447,6 +468,137 @@ class UsageTrackerApp:
         popup.bind("<Button-1>", lambda e: popup.after_cancel(auto_close) if auto_close else None)
         popup.bind("<FocusOut>", lambda e: popup.destroy())
         popup.focus_set()
+
+    # ════════════════════════════════════════════
+    # F-18: ミニウィジェット（フローティング残量表示）
+    # ════════════════════════════════════════════
+
+    def _toggle_mini_widget(self, icon=None, item=None):
+        """ミニウィジェットの表示/非表示を切り替える。"""
+        if not self.app_gui or self._stop_event.is_set():
+            return
+        self.app_gui.after(0, self._do_toggle_mini_widget)
+
+    def _do_toggle_mini_widget(self):
+        if self._mini_widget and self._mini_widget.winfo_exists():
+            self._mini_widget.destroy()
+            self._mini_widget = None
+        else:
+            self._create_mini_widget()
+
+    def _create_mini_widget(self):
+        """F-18: ミニウィジェット作成。"""
+        import tkinter as tk
+        from PIL import ImageTk
+        from icons.gauge import make_gauge_large
+
+        BG = "#2c2c2c"
+        ACCENT = "#E07B39"
+
+        w = tk.Toplevel(self.app_gui)
+        w.overrideredirect(True)
+        w.attributes("-topmost", True)
+        w.configure(bg=BG)
+        self._mini_widget = w
+
+        frame = tk.Frame(w, bg=BG, padx=8, pady=8)
+        frame.pack()
+
+        # ゲージ画像
+        gauge_img = make_gauge_large(pct=self._tray_pct, mode=self._tray_mode, size=128)
+        self._widget_photo = ImageTk.PhotoImage(gauge_img)
+        self._widget_img_label = tk.Label(frame, image=self._widget_photo, bg=BG)
+        self._widget_img_label.pack(side=tk.LEFT)
+
+        # テキスト
+        text_frame = tk.Frame(frame, bg=BG, padx=8)
+        text_frame.pack(side=tk.LEFT)
+
+        # 残量%を計算
+        data = self._usage_data
+        if data:
+            fh = data.get("five_hour_util")
+            if fh is not None and fh >= 100:
+                ee = data.get("extra_usage_is_enabled", False)
+                eu = data.get("extra_usage_util")
+                if ee and eu is not None:
+                    label, pct_val = i18n.t("extra_usage").rstrip(":"), max(0, 100 - eu)
+                elif ee:
+                    label, pct_val = i18n.t("extra_usage").rstrip(":"), 100
+                else:
+                    label, pct_val = i18n.t("session_5h").rstrip(":"), 0
+            elif fh is not None:
+                label, pct_val = i18n.t("session_5h").rstrip(":"), max(0, 100 - fh)
+            else:
+                label, pct_val = "Session", 0
+        else:
+            label, pct_val = "Session", 0
+
+        self._widget_label = tk.Label(text_frame, text=label, font=("Meiryo", 9),
+                                       bg=BG, fg=ACCENT)
+        self._widget_label.pack(anchor="w")
+        self._widget_pct = tk.Label(text_frame, text=f"{pct_val:.0f}%",
+                                     font=("Meiryo", 24, "bold"), bg=BG, fg="white")
+        self._widget_pct.pack(anchor="w")
+        self._widget_sub = tk.Label(text_frame, text="remaining",
+                                     font=("Meiryo", 9), bg=BG, fg="#888888")
+        self._widget_sub.pack(anchor="w")
+
+        # 位置: 画面右下
+        w.update_idletasks()
+        ww, wh = w.winfo_width(), w.winfo_height()
+        x = w.winfo_screenwidth() - ww - 20
+        y = w.winfo_screenheight() - wh - 80
+        w.geometry(f"+{x}+{y}")
+
+        # ドラッグ移動
+        def start_drag(event):
+            w._drag_x = event.x
+            w._drag_y = event.y
+
+        def on_drag(event):
+            x = w.winfo_x() + event.x - w._drag_x
+            y = w.winfo_y() + event.y - w._drag_y
+            w.geometry(f"+{x}+{y}")
+
+        w.bind("<ButtonPress-1>", start_drag)
+        w.bind("<B1-Motion>", on_drag)
+
+        # 右クリックで閉じる
+        w.bind("<Button-3>", lambda e: self._do_toggle_mini_widget())
+
+    def _update_mini_widget(self):
+        """ミニウィジェットのゲージとテキストを更新する。"""
+        if not self._mini_widget or not self._mini_widget.winfo_exists():
+            return
+        try:
+            from PIL import ImageTk
+            from icons.gauge import make_gauge_large
+
+            gauge_img = make_gauge_large(pct=self._tray_pct, mode=self._tray_mode, size=128)
+            self._widget_photo = ImageTk.PhotoImage(gauge_img)
+            self._widget_img_label.config(image=self._widget_photo)
+
+            data = self._usage_data
+            if data:
+                fh = data.get("five_hour_util")
+                if fh is not None and fh >= 100:
+                    ee = data.get("extra_usage_is_enabled", False)
+                    eu = data.get("extra_usage_util")
+                    if ee and eu is not None:
+                        label, pct_val = i18n.t("extra_usage").rstrip(":"), max(0, 100 - eu)
+                    elif ee:
+                        label, pct_val = i18n.t("extra_usage").rstrip(":"), 100
+                    else:
+                        label, pct_val = i18n.t("session_5h").rstrip(":"), 0
+                elif fh is not None:
+                    label, pct_val = i18n.t("session_5h").rstrip(":"), max(0, 100 - fh)
+                else:
+                    return
+                self._widget_label.config(text=label)
+                self._widget_pct.config(text=f"{pct_val:.0f}%")
+        except Exception:
+            pass
 
     def _tray_blink_loop(self):
         import time

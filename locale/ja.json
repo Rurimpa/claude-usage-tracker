@@ -69,6 +69,7 @@
   "open_dashboard": "ダッシュボードを開く",
   "tray_show_usage": "使用量を表示",
   "tray_open_dashboard": "ダッシュボードを開く",
+  "tray_mini_widget": "ミニウィジェット",
   "tray_exit": "終了",
   "tray_tooltip_session": "セッション: 残り{value}%",
   "tray_tooltip_extra_unlimited": "追加使用量: 無制限",
