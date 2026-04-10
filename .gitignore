@@ -1,0 +1,10 @@
+data/
+logs/
+__pycache__/
+.claude/
+*.pyc
+icons/__pycache__/
+dist/
+build/
+output/
+*.spec
