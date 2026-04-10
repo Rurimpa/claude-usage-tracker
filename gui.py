@@ -402,10 +402,27 @@ class App(tk.Tk):
     def _on_lang_change(self, event=None):
         for name, code in _LANG_OPTIONS:
             if name == self._lang_var.get():
+                if code == config.LANGUAGE:
+                    return
                 config.LANGUAGE = code
                 config.save_settings()
-                messagebox.showinfo("Language", i18n.t("restart_required"))
+                if messagebox.askyesno("Language", i18n.t("restart_required") + "\n\nRestart now?"):
+                    self._restart_app()
                 break
+
+    def _restart_app(self):
+        """アプリを自動再起動する。"""
+        import subprocess
+        import sys
+        try:
+            subprocess.Popen([sys.executable] + sys.argv)
+        except Exception as e:
+            logger.error("再起動失敗: %s", e)
+            return
+        if self._quit_callback:
+            self._quit_callback()
+        else:
+            self.destroy()
 
     def _save_orgid(self):
         config.ORG_ID = self._orgid_entry.get().strip()

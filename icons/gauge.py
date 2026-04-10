@@ -40,7 +40,7 @@ COLOR_RED = (231, 76, 60)         # ≤20%
 
 # 背景画像パス
 _ICONS_DIR = Path(__file__).parent
-_BG_PATH = _ICONS_DIR / "IMG_6619s2.png"
+_BG_PATH = _ICONS_DIR / "tss.png"
 _bg_cache = None
 
 
