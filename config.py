@@ -6,7 +6,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # === バ�Eジョン ===
-VERSION = "3.2.0"
+VERSION = "3.3.0"
 
 # === 言語設宁E===
 LANGUAGE = "en"  # "en" or "ja"
