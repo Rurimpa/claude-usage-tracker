@@ -1,5 +1,17 @@
 # CHANGELOG
 
+## v3.1.0 (2026-04-10)
+
+### 新機能: 多言語対応（i18n）
+- English / 日本語を設定タブのドロップダウンで切替可能
+- i18n.py モジュール新規作成（キーベースの翻訳文字列管理）
+- locale/en.json, locale/ja.json に全UI文字列を外出し
+- gui.py, main.py, period_selector.py の全ハードコード文字列を i18n.t() に置換
+- ポップアップ・ツールチップ・トレイメニューも完全i18n対応
+- 言語変更時は再起動促すダイアログ表示
+- config.py に LANGUAGE 設定追加（settings.jsonに永続化）
+- README.md を英語メインに変更、README_ja.md を日本語版として新規作成
+
 ## v3.0.0 (2026-04-10)
 
 ### OAuth認証への全面移行（認証方式の完全刷新）

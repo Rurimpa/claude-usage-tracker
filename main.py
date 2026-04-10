@@ -85,6 +85,9 @@ try:
     import scanner
     _debug("usage_api import開始")
     from usage_api import UsageAPIClient
+    _debug("i18n import開始")
+    import i18n
+    i18n.load(config.LANGUAGE)
     _debug("全import完了")
 except Exception as e:
     _debug(f"import失敗: {traceback.format_exc()}")
@@ -273,13 +276,13 @@ class UsageTrackerApp:
 
         if five_hour is not None:
             rem = max(0.0, 100.0 - five_hour)
-            parts.append(f"セッション: 残り{rem:.0f}%")
+            parts.append(i18n.t("tray_tooltip_session", value=f"{rem:.0f}"))
         if extra_enabled:
             if extra_util is None:
-                parts.append("追加使用量: 無制限")
+                parts.append(i18n.t("tray_tooltip_extra_unlimited"))
             else:
                 rem = max(0.0, 100.0 - extra_util)
-                parts.append(f"追加使用量: 残り{rem:.0f}%")
+                parts.append(i18n.t("tray_tooltip_extra_pct", value=f"{rem:.0f}"))
 
         tooltip = "Claude Usage Tracker"
         if parts:
@@ -326,13 +329,13 @@ class UsageTrackerApp:
                 icon.stop()
                 self._quit_all()
 
-            tooltip = "Claude Usage Tracker\nUsage API データ未取得"
+            tooltip = f"Claude Usage Tracker\n{i18n.t('tray_tooltip_pending')}"
 
             menu = pystray.Menu(
-                pystray.MenuItem("使用量を表示", on_left_click, default=True),
-                pystray.MenuItem("ダッシュボードを開く", self._show_dashboard),
+                pystray.MenuItem(i18n.t("tray_show_usage"), on_left_click, default=True),
+                pystray.MenuItem(i18n.t("tray_open_dashboard"), self._show_dashboard),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("終了", quit_app),
+                pystray.MenuItem(i18n.t("tray_exit"), quit_app),
             )
             self.tray_icon = pystray.Icon(
                 "Claude Usage Tracker", img, tooltip, menu
@@ -402,7 +405,7 @@ class UsageTrackerApp:
             if fh is not None:
                 rem = max(0.0, 100.0 - fh)
                 c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
-                row("セッション (5h):", f"残り {rem:.0f}%", c)
+                row(i18n.t("session_5h"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
                 if fr:
                     rs = _format_reset_time(fr)
                     if rs:
@@ -411,7 +414,7 @@ class UsageTrackerApp:
             if sd is not None:
                 rem = max(0.0, 100.0 - sd)
                 c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
-                row("週間 (全モデル):", f"残り {rem:.0f}%", c)
+                row(i18n.t("weekly_all"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
                 if sr:
                     rs = _format_reset_time(sr)
                     if rs:
@@ -420,22 +423,22 @@ class UsageTrackerApp:
             if sn is not None:
                 rem = max(0.0, 100.0 - sn)
                 c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
-                row("週間 (Sonnet):", f"残り {rem:.0f}%", c)
+                row(i18n.t("weekly_sonnet"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
 
             if ee:
                 if eu is None:
-                    row("追加使用量:", "無制限", "#2ecc71")
+                    row(i18n.t("extra_usage"), i18n.t("extra_unlimited"), "#2ecc71")
                 else:
                     rem = max(0.0, 100.0 - eu)
                     c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
-                    row("追加使用量:", f"残り {rem:.0f}%", c)
+                    row(i18n.t("extra_usage"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
         else:
-            tk.Label(body, text="Usage API データ未取得",
+            tk.Label(body, text=i18n.t("api_data_pending"),
                      font=("Meiryo", 10), bg="#2c3e50", fg="#95a5a6").pack(pady=15)
 
         link = tk.Frame(popup, bg="#2c3e50")
         link.pack(fill=tk.X, padx=12, pady=(0, 8))
-        lbl = tk.Label(link, text="ダッシュボードを開く →", font=("Meiryo", 8),
+        lbl = tk.Label(link, text=f"{i18n.t('open_dashboard')} →", font=("Meiryo", 8),
                        bg="#2c3e50", fg="#3498db", cursor="hand2")
         lbl.pack(anchor="e")
         lbl.bind("<Button-1>", lambda e: (popup.destroy(), self._show_dashboard()))
@@ -498,10 +501,10 @@ def _format_reset_time(resets_at: str) -> str:
         dt_reset = datetime.strptime(ts, fmt)
         delta = dt_reset - datetime.utcnow()
         if delta.total_seconds() <= 0:
-            return "リセット済み"
+            return i18n.t("reset_done")
         h = int(delta.total_seconds() // 3600)
         m = int((delta.total_seconds() % 3600) // 60)
-        return f"{h}時間{m}分後リセット" if h > 0 else f"{m}分後リセット"
+        return i18n.t("resets_in_hm", h=h, m=m) if h > 0 else i18n.t("resets_in_m", m=m)
     except Exception:
         return ""
 
@@ -527,7 +530,7 @@ if __name__ == "__main__":
             root.withdraw()
             messagebox.showwarning(
                 "Usage Tracker",
-                "Claude Usage Tracker はすでに起動しています。\nタスクトレイを確認してください。"
+                i18n.t("already_running")
             )
             root.destroy()
             sys.exit(0)

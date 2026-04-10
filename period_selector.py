@@ -6,26 +6,20 @@ from datetime import datetime, timedelta
 from typing import Callable, Optional, Tuple
 from tkcalendar import DateEntry
 import config
+import i18n
 
 logger = logging.getLogger(__name__)
 
 
 class PeriodSelector(tk.Frame):
-    """
-    期間選択UIコンポーネント。
-    プリセットボタン（今日/1週間/1ヶ月/全期間/カスタム）＋
-    カレンダー入力（DateEntry＋時間スピンボックス）を提供する。
-
-    コールバックに (since_utc, until_utc) を渡す。
-    since_utc/until_utc: 'YYYY-MM-DDTHH:MM:SS' 形式のUTC文字列。Noneは制限なし。
-    """
+    """期間選択UIコンポーネント。"""
 
     PRESETS = [
-        ("今日", "today"),
-        ("1週間", "week"),
-        ("1ヶ月", "month"),
-        ("全期間", "all"),
-        ("カスタム", "custom"),
+        ("period_today", "today"),
+        ("period_1week", "week"),
+        ("period_1month", "month"),
+        ("period_all", "all"),
+        ("period_custom", "custom"),
     ]
 
     def __init__(self, parent, on_change: Callable[[Optional[str], Optional[str]], None],
@@ -48,13 +42,13 @@ class PeriodSelector(tk.Frame):
         row = tk.Frame(self, bg=config.BG_COLOR)
         row.pack(fill=tk.X, pady=(0, 2))
 
-        tk.Label(row, text="期間:", font=config.FONT_BOLD,
+        tk.Label(row, text=i18n.t("period_prefix").rstrip(), font=config.FONT_BOLD,
                  bg=config.BG_COLOR).pack(side=tk.LEFT, padx=(0, 5))
 
         self._preset_buttons = {}
-        for label, key in self.PRESETS:
+        for i18n_key, key in self.PRESETS:
             btn = tk.Button(
-                row, text=label, font=config.FONT,
+                row, text=i18n.t(i18n_key), font=config.FONT,
                 relief=tk.FLAT, padx=8, pady=2,
                 command=lambda k=key: self._on_preset_click(k)
             )
@@ -67,7 +61,7 @@ class PeriodSelector(tk.Frame):
         self._custom_frame = tk.Frame(self, bg=config.BG_COLOR)
         self._custom_frame.pack(fill=tk.X, pady=(0, 2))
 
-        tk.Label(self._custom_frame, text="カスタム:", font=config.FONT,
+        tk.Label(self._custom_frame, text=f"{i18n.t('period_custom')}:", font=config.FONT,
                  bg=config.BG_COLOR).pack(side=tk.LEFT, padx=(0, 5))
 
         # 開始日
@@ -135,7 +129,7 @@ class PeriodSelector(tk.Frame):
 
         # 適用ボタン
         self._apply_btn = tk.Button(
-            self._custom_frame, text="  適用  ", font=config.FONT,
+            self._custom_frame, text=f"  {i18n.t('btn_save')}  ", font=config.FONT,
             bg=config.ACCENT_COLOR, fg="white", relief=tk.FLAT,
             command=self._apply_custom
         )
@@ -246,7 +240,7 @@ class PeriodSelector(tk.Frame):
     def get_period_label(self) -> str:
         """現在の期間を表示用ラベル文字列で返す。"""
         preset = self._current_preset.get()
-        labels = {"today": "今日", "week": "直近1週間", "month": "直近1ヶ月", "all": "全期間"}
+        labels = {"today": i18n.t("period_today"), "week": i18n.t("period_1week"), "month": i18n.t("period_1month"), "all": i18n.t("period_all")}
         if preset in labels:
             return labels[preset]
         # カスタム
@@ -259,4 +253,4 @@ class PeriodSelector(tk.Frame):
             em = int(self._end_min.get())
             return f"{start_d.strftime('%m/%d')} {sh:02d}:{sm:02d} \u301c {end_d.strftime('%m/%d')} {eh:02d}:{em:02d}"
         except Exception:
-            return "カスタム"
+            return i18n.t("period_custom")

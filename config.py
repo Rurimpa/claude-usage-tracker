@@ -6,7 +6,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # === バージョン ===
-VERSION = "3.0.0"
+VERSION = "3.1.0"
+
+# === 言語設定 ===
+LANGUAGE = "en"  # "en" or "ja"
 
 # === パス設定（ユーザー非依存） ===
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -157,7 +160,7 @@ def calc_cost(model: str, input_tokens: int, output_tokens: int,
 # === 設定の永続化（非機密情報のみ） ===
 
 def load_settings() -> None:
-    global SCAN_INTERVAL_SECONDS, ORG_ID, USAGE_API_INTERVAL_SECONDS, USAGE_API_ENABLED
+    global SCAN_INTERVAL_SECONDS, ORG_ID, USAGE_API_INTERVAL_SECONDS, USAGE_API_ENABLED, LANGUAGE
     if not SETTINGS_PATH.exists():
         return
     for enc in ("utf-8", "shift-jis", "latin-1"):
@@ -168,6 +171,7 @@ def load_settings() -> None:
             ORG_ID = str(data.get("org_id", ""))
             USAGE_API_INTERVAL_SECONDS = int(data.get("usage_api_interval_seconds", 120))
             USAGE_API_ENABLED = bool(data.get("usage_api_enabled", True))
+            LANGUAGE = str(data.get("language", "en"))
             logger.info("設定読み込み完了: スキャン間隔=%d秒, ORG_ID=%s, API間隔=%d秒",
                         SCAN_INTERVAL_SECONDS,
                         ORG_ID[:8] + "..." if ORG_ID else "(自動取得)",
@@ -185,6 +189,7 @@ def save_settings() -> None:
             "org_id": ORG_ID,
             "usage_api_interval_seconds": USAGE_API_INTERVAL_SECONDS,
             "usage_api_enabled": USAGE_API_ENABLED,
+            "language": LANGUAGE,
         }
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
