@@ -1,12 +1,15 @@
 """Usage Tracker - Settings and Constants"""
 import json
 import logging
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # === Version ===
-VERSION = "3.5.4"
+VERSION = "3.5.5"
 
 # === Language ===
 LANGUAGE = "en"  # "en" or "ja"
@@ -208,9 +211,93 @@ def calc_cost(model: str, input_tokens: int, output_tokens: int,
 # === Mini widget settings ===
 MINI_WIDGET_SIZE = 200
 
+# === Autostart settings ===
+AUTOSTART = False
+
+_SHORTCUT_NAME = "ClaudeUsageTracker.lnk"
+
+
+def get_startup_folder() -> Path:
+    """Windowsスタートアップフォルダのパスを返す。"""
+    appdata = os.environ.get("APPDATA", "")
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+
+
+def get_startup_shortcut_path() -> Path:
+    """スタートアップフォルダ内のショートカットパスを返す。"""
+    return get_startup_folder() / _SHORTCUT_NAME
+
+
+def is_autostart_enabled() -> bool:
+    """スタートアップフォルダにショートカットが存在するか確認する。"""
+    return get_startup_shortcut_path().exists()
+
+
+def enable_autostart() -> bool:
+    """スタートアップフォルダにショートカットを作成する。"""
+    global AUTOSTART
+    shortcut_path = get_startup_shortcut_path()
+
+    if getattr(sys, 'frozen', False):
+        # PyInstallerでビルドされた実行ファイル
+        target = sys.executable
+        arguments = ""
+        work_dir = str(Path(sys.executable).parent)
+    else:
+        # 開発環境: pythonw.exe + main.py
+        python_dir = Path(sys.executable).parent
+        pythonw = python_dir / "pythonw.exe"
+        if not pythonw.exists():
+            pythonw = Path(sys.executable)
+        target = str(pythonw)
+        main_path = str(BASE_DIR / "main.py")
+        arguments = f'\\"{main_path}\\"'
+        work_dir = str(BASE_DIR)
+
+    # PowerShellでショートカット作成
+    ps_script = (
+        "$ws = New-Object -ComObject WScript.Shell; "
+        f"$s = $ws.CreateShortcut('{shortcut_path}'); "
+        f"$s.TargetPath = '{target}'; "
+        f"$s.Arguments = '{arguments}'; "
+        f"$s.WorkingDirectory = '{work_dir}'; "
+        "$s.Save()"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True, timeout=10
+        )
+        if result.returncode == 0 and shortcut_path.exists():
+            AUTOSTART = True
+            save_settings()
+            logger.info("自動起動ショートカット作成: %s", shortcut_path)
+            return True
+        logger.error("ショートカット作成失敗: %s", result.stderr.decode(errors="replace"))
+        return False
+    except Exception as e:
+        logger.error("自動起動設定エラー: %s", e)
+        return False
+
+
+def disable_autostart() -> bool:
+    """スタートアップフォルダからショートカットを削除する。"""
+    global AUTOSTART
+    shortcut_path = get_startup_shortcut_path()
+    try:
+        if shortcut_path.exists():
+            shortcut_path.unlink()
+            logger.info("自動起動ショートカット削除: %s", shortcut_path)
+        AUTOSTART = False
+        save_settings()
+        return True
+    except Exception as e:
+        logger.error("自動起動解除エラー: %s", e)
+        return False
+
 
 def load_settings() -> None:
-    global SCAN_INTERVAL_SECONDS, ORG_ID, USAGE_API_INTERVAL_SECONDS, USAGE_API_ENABLED, LANGUAGE, MINI_WIDGET_SIZE
+    global SCAN_INTERVAL_SECONDS, ORG_ID, USAGE_API_INTERVAL_SECONDS, USAGE_API_ENABLED, LANGUAGE, MINI_WIDGET_SIZE, AUTOSTART
     if not SETTINGS_PATH.exists():
         return
     for enc in ("utf-8", "shift-jis", "latin-1"):
@@ -224,6 +311,7 @@ def load_settings() -> None:
             LANGUAGE = str(data.get("language", "en"))
             MINI_WIDGET_SIZE = int(data.get("mini_widget_size", 200))
             MINI_WIDGET_SIZE = max(120, min(400, MINI_WIDGET_SIZE))
+            AUTOSTART = bool(data.get("autostart", False))
             logger.info("Settings loaded: scan=%ds, ORG_ID=%s, API=%ds",
                         SCAN_INTERVAL_SECONDS,
                         ORG_ID[:8] + "..." if ORG_ID else "(auto)",
@@ -243,6 +331,7 @@ def save_settings() -> None:
             "usage_api_enabled": USAGE_API_ENABLED,
             "language": LANGUAGE,
             "mini_widget_size": MINI_WIDGET_SIZE,
+            "autostart": AUTOSTART,
         }
         with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)

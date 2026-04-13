@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## v3.5.5 (2026-04-13)
+
+### 新機能
+- **PC起動時の自動起動ON/OFF設定**: 設定タブにチェックボックス追加。ONでWindowsスタートアップフォルダにショートカット(.lnk)を作成、OFFで削除。レジストリ不使用。インストール済みexe/開発環境(pythonw)の両方に対応。PowerShellでショートカット作成。アプリ起動時にショートカットの実在をチェックして初期状態を設定
+
+### 内部改善
+- config.py: `VERSION`を3.5.5に更新。`AUTOSTART`設定追加。`get_startup_folder()`, `get_startup_shortcut_path()`, `is_autostart_enabled()`, `enable_autostart()`, `disable_autostart()` 関数追加。`load_settings()`/`save_settings()`に`autostart`フラグ追加
+- gui.py: `_build_settings_tab()`に自動起動LabelFrame+Checkbutton追加。`_on_autostart_change()`メソッド追加
+- locale/en.json, locale/ja.json: `autostart_section`, `autostart_label` キー追加
+
 ## v3.5.4 (2026-04-13)
 
 ### UI改善

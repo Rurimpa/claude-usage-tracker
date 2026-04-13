@@ -918,6 +918,18 @@ class App(tk.Tk):
         lang_combo.pack(side=tk.LEFT, padx=5)
         lang_combo.bind("<<ComboboxSelected>>", self._on_lang_change)
 
+        # 自動起動設定
+        auto_frame = tk.LabelFrame(sf, text=i18n.t("autostart_section"), font=config.FONT_BOLD,
+                                    bg=config.BG_COLOR, padx=10, pady=10)
+        auto_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
+        self._autostart_var = tk.BooleanVar(value=config.is_autostart_enabled())
+        self._autostart_cb = tk.Checkbutton(
+            auto_frame, text=i18n.t("autostart_label"), variable=self._autostart_var,
+            font=config.FONT, bg=config.BG_COLOR, activebackground=config.BG_COLOR,
+            command=self._on_autostart_change
+        )
+        self._autostart_cb.pack(anchor="w")
+
         # OAuth認証
         af = tk.LabelFrame(sf, text=i18n.t("oauth_auth"), font=config.FONT_BOLD, bg=config.BG_COLOR, padx=10, pady=10)
         af.pack(fill=tk.X, padx=15, pady=(0, 10))
@@ -982,6 +994,15 @@ class App(tk.Tk):
         if sec:
             config.USAGE_API_INTERVAL_SECONDS = sec
             config.save_settings()
+
+    def _on_autostart_change(self):
+        """自動起動チェックボックスの状態変更。"""
+        if self._autostart_var.get():
+            ok = config.enable_autostart()
+            if not ok:
+                self._autostart_var.set(False)
+        else:
+            config.disable_autostart()
 
     def _on_lang_change(self, event=None):
         for name, code in _LANG_OPTIONS:

@@ -115,5 +115,7 @@
   "last_update": "最終更新: {time}",
   "widget_session": "セッション",
   "widget_weekly": "週間",
-  "widget_extra": "追加"
+  "widget_extra": "追加",
+  "autostart_section": "  スタートアップ  ",
+  "autostart_label": "PC起動時に自動起動"
 }

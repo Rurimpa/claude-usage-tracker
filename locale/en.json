@@ -115,5 +115,7 @@
   "last_update": "Last update: {time}",
   "widget_session": "Session",
   "widget_weekly": "Weekly",
-  "widget_extra": "Extra"
+  "widget_extra": "Extra",
+  "autostart_section": "  Startup  ",
+  "autostart_label": "Start on Windows login"
 }
