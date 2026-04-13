@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import ttk
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional, Tuple
 from tkcalendar import DateEntry
 import config
@@ -198,7 +198,7 @@ class PeriodSelector(tk.Frame):
     @staticmethod
     def _compute_preset_utc(preset: str) -> Tuple[Optional[str], Optional[str]]:
         """プリセット名から (since_utc, until_utc) を返す。"""
-        now_utc = datetime.utcnow()
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         now_jst = now_utc + timedelta(hours=9)
         until = None  # None = 現在まで
 

@@ -2,7 +2,7 @@
 import sqlite3
 import logging
 from pathlib import Path
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional, Tuple
 import config
 
@@ -157,7 +157,7 @@ def update_scan_state(file_path: str, size: int) -> None:
         conn.execute(
             """INSERT OR REPLACE INTO scan_state (file_path, last_size, last_scanned)
                VALUES (?,?,?)""",
-            (file_path, size, datetime.utcnow().isoformat())
+            (file_path, size, datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
         )
 
 
@@ -279,7 +279,7 @@ def query_hourly_tokens(since: Optional[str] = None, until: Optional[str] = None
     elif since:
         try:
             s = datetime.strptime(since[:19], '%Y-%m-%dT%H:%M:%S')
-            span_hours = (datetime.utcnow() - s).total_seconds() / 3600
+            span_hours = (datetime.now(timezone.utc).replace(tzinfo=None) - s).total_seconds() / 3600
         except Exception:
             span_hours = 48
     else:
@@ -455,7 +455,125 @@ def query_activity_log(since: Optional[str] = None, until: Optional[str] = None)
         return result
 
 
+def query_weekly_utilization_history() -> list:
+    """直近7日間のseven_day_utilを日別に1ポイントずつ返す（各日の最終値）。
+
+    Returns:
+        [{"date": "2026-04-11", "util": 14.0}, ...] 日付昇順
+    """
+    since = (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)).strftime('%Y-%m-%dT00:00:00')
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT
+                date(timestamp) as day,
+                seven_day_util
+            FROM usage_snapshot
+            WHERE timestamp >= ?
+              AND seven_day_util IS NOT NULL
+            ORDER BY timestamp ASC
+        """, (since,)).fetchall()
+
+    # 各日の最終レコードの値を採用
+    daily = {}
+    for r in rows:
+        daily[r["day"]] = r["seven_day_util"]
+
+    result = []
+    for day_str in sorted(daily.keys()):
+        result.append({"date": day_str, "util": daily[day_str]})
+    return result
+
+
 def get_total_record_count() -> int:
     with get_conn() as conn:
         row = conn.execute("SELECT COUNT(*) as cnt FROM token_log").fetchone()
         return row["cnt"] if row else 0
+
+
+def get_db_size_mb() -> float:
+    """データベースファイルのサイズをMBで返す。"""
+    try:
+        if config.DB_PATH.exists():
+            return config.DB_PATH.stat().st_size / (1024 * 1024)
+    except Exception:
+        pass
+    return 0.0
+
+
+def cleanup_old_records() -> dict:
+    """古いレコードとログファイルを削除し、DBを圧縮する。
+
+    Returns:
+        削除件数のdict: {"snapshot": N, "token_log": N, "tool_log": N, "log_files": N}
+    """
+    result = {"snapshot": 0, "token_log": 0, "tool_log": 0, "log_files": 0}
+
+    try:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        with get_conn() as conn:
+            # usage_snapshot: 30日以上前を削除
+            cutoff_snapshot = (now - timedelta(days=config.RETENTION_DAYS_SNAPSHOT)).isoformat()
+            cur = conn.execute(
+                "DELETE FROM usage_snapshot WHERE timestamp < ?", (cutoff_snapshot,)
+            )
+            result["snapshot"] = cur.rowcount
+
+            # token_log: 90日以上前を削除
+            cutoff_token = (now - timedelta(days=config.RETENTION_DAYS_TOKEN_LOG)).isoformat()
+            cur = conn.execute(
+                "DELETE FROM token_log WHERE timestamp < ?", (cutoff_token,)
+            )
+            result["token_log"] = cur.rowcount
+
+            # tool_log: 紐づくtoken_logが削除されたレコードを削除
+            cur = conn.execute(
+                """DELETE FROM tool_log
+                   WHERE associated_token_log_id IS NOT NULL
+                     AND associated_token_log_id NOT IN (SELECT id FROM token_log)"""
+            )
+            result["tool_log"] = cur.rowcount
+
+        # VACUUM は別接続で実行（トランザクション外）
+        conn2 = sqlite3.connect(str(config.DB_PATH), timeout=30)
+        conn2.execute("VACUUM")
+        conn2.close()
+
+    except Exception as e:
+        logger.error("DBローテーションエラー: %s", e)
+
+    # ログファイル: 30日以上前を削除
+    try:
+        cutoff_date = date.today() - timedelta(days=config.RETENTION_DAYS_LOG_FILES)
+        if config.LOG_DIR.exists():
+            for f in config.LOG_DIR.iterdir():
+                if f.is_file() and f.suffix == ".log":
+                    try:
+                        mtime = datetime.fromtimestamp(f.stat().st_mtime).date()
+                        if mtime < cutoff_date:
+                            f.unlink()
+                            result["log_files"] += 1
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.error("ログファイルローテーションエラー: %s", e)
+
+    total = sum(result.values())
+    if total > 0:
+        logger.info("DBローテーション完了: snapshot=%d件, token_log=%d件, tool_log=%d件, log_files=%d件",
+                     result["snapshot"], result["token_log"], result["tool_log"], result["log_files"])
+    else:
+        logger.info("DBローテーション: 削除対象なし")
+
+    return result
+
+
+def vacuum_db() -> None:
+    """手動VACUUM実行。"""
+    try:
+        conn = sqlite3.connect(str(config.DB_PATH), timeout=30)
+        conn.execute("VACUUM")
+        conn.close()
+        logger.info("VACUUM完了")
+    except Exception as e:
+        logger.error("VACUUMエラー: %s", e)

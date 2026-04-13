@@ -2,9 +2,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import logging
+import math
 import os
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -17,6 +18,159 @@ from period_selector import PeriodSelector
 logger = logging.getLogger(__name__)
 
 _ACTIVITY_COLS = ("time", "project", "model", "cost", "detail")
+
+
+def _time_to_angle_static(h: int, m: int) -> float:
+    """時:分をtkinter Canvasの角度（度）に変換。12時=90°、時計回り=角度減少。"""
+    return 90 - ((h % 12) * 30 + m * 0.5)
+
+
+def draw_clock_on_canvas(canvas: tk.Canvas, size: int, data: Optional[dict] = None,
+                         show_numbers: bool = True):
+    """アナログ時計盤を描画する共通関数（残量タブ・ミニウィジェット・ポップアップ共通）。"""
+    canvas.delete("all")
+    cx, cy = size // 2, size // 2
+    radius = size // 2 - max(10, size // 30)
+
+    # 背景円
+    canvas.create_oval(cx - radius, cy - radius, cx + radius, cy + radius,
+                       fill="#2c2c2c", outline="#555555", width=2)
+
+    # 現在時刻（JST = UTC+9）
+    now_jst = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=9)
+    h_now, m_now = now_jst.hour, now_jst.minute
+
+    # Usage APIデータから3パターン分岐
+    arc_pct = 0.0
+    arc_mode = "session"
+    show_arc = False
+    dead = False
+    reset_time_jst = None
+    five_hour_resets_at = None
+
+    if data:
+        fh = data.get("five_hour_util")
+        extra_enabled = data.get("extra_usage_is_enabled", False)
+        extra_util = data.get("extra_usage_util")
+
+        if fh is not None and fh >= 100:
+            if extra_enabled:
+                if extra_util is None:
+                    arc_pct = 100.0
+                else:
+                    arc_pct = max(0.0, 100.0 - extra_util)
+                arc_mode = "extra"
+                show_arc = True
+            else:
+                dead = True
+        elif fh is not None:
+            arc_pct = max(0.0, 100.0 - fh)
+            arc_mode = "session"
+            show_arc = True
+
+        fr = data.get("five_hour_resets_at")
+        five_hour_resets_at = fr
+        if fr:
+            try:
+                ts = fr[:19]
+                fmt = '%Y-%m-%dT%H:%M:%S' if 'T' in ts else '%Y-%m-%d %H:%M:%S'
+                dt_utc = datetime.strptime(ts, fmt)
+                reset_time_jst = dt_utc + timedelta(hours=9)
+            except Exception:
+                pass
+
+    # 弧を描画（ペース比率で色を決定）
+    if show_arc and reset_time_jst:
+        # ペース色ロジック: セッション残量の弧にはペース比率で色を決定
+        if arc_mode == "session" and five_hour_resets_at:
+            try:
+                ts = five_hour_resets_at[:19]
+                fmt = '%Y-%m-%dT%H:%M:%S' if 'T' in ts else '%Y-%m-%d %H:%M:%S'
+                dt_reset_utc = datetime.strptime(ts, fmt)
+                now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                session_start = dt_reset_utc - timedelta(hours=5)
+                elapsed_seconds = (now_utc - session_start).total_seconds()
+                elapsed_pct = max(0.0, min(100.0, elapsed_seconds / (5 * 3600) * 100))
+                arc_color = config.get_session_pace_color(arc_pct, elapsed_pct)
+            except Exception:
+                arc_color = config.get_remaining_color(arc_pct, arc_mode)
+        else:
+            arc_color = config.get_remaining_color(arc_pct, arc_mode)
+
+        # v3.5.1: 弧の角度 = 残量% × 150°（5時間 = 12h時計上で150°）
+        # 弧の終端 = リセット時刻の位置
+        # 弧の始端 = リセット時刻から「残量%×5時間」分だけ反時計回りに戻った位置
+        reset_angle = _time_to_angle_static(reset_time_jst.hour, reset_time_jst.minute)
+        arc_degrees = arc_pct / 100.0 * 150.0  # 5h = 150° on 12h clock
+        if arc_degrees > 0:
+            start_angle = reset_angle + arc_degrees  # リセットから逆方向に戻る
+            extent = -arc_degrees  # 時計回りにリセット位置まで描画
+
+            arc_margin = max(25, size // 12)
+            canvas.create_arc(
+                cx - radius + arc_margin, cy - radius + arc_margin,
+                cx + radius - arc_margin, cy + radius - arc_margin,
+                start=start_angle, extent=extent,
+                fill=arc_color, outline="", stipple=""
+            )
+
+    # 分の目盛り（細い線）
+    for i in range(60):
+        if i % 5 == 0:
+            continue
+        angle_rad = math.radians(90 - i * 6)
+        tick_outer = radius - max(5, size // 60)
+        tick_inner = radius - max(10, size // 30)
+        x1 = cx + tick_outer * math.cos(angle_rad)
+        y1 = cy - tick_outer * math.sin(angle_rad)
+        x2 = cx + tick_inner * math.cos(angle_rad)
+        y2 = cy - tick_inner * math.sin(angle_rad)
+        canvas.create_line(x1, y1, x2, y2, fill="#555555", width=1)
+
+    # 時間の目盛り（太い線）+ 数字
+    for i in range(12):
+        angle_rad = math.radians(90 - i * 30)
+        tick_outer = radius - max(5, size // 60)
+        tick_inner = radius - max(18, size // 17)
+        x1 = cx + tick_outer * math.cos(angle_rad)
+        y1 = cy - tick_outer * math.sin(angle_rad)
+        x2 = cx + tick_inner * math.cos(angle_rad)
+        y2 = cy - tick_inner * math.sin(angle_rad)
+        canvas.create_line(x1, y1, x2, y2, fill="white", width=2)
+        if show_numbers:
+            num = i if i > 0 else 12
+            num_r = radius - max(30, size // 10)
+            x_num = cx + num_r * math.cos(angle_rad)
+            y_num = cy - num_r * math.sin(angle_rad)
+            font_size = max(7, size // 27)
+            canvas.create_text(x_num, y_num, text=str(num),
+                               fill="white", font=(config.FONT_FAMILY, font_size))
+
+    # 短針（時針）
+    h_angle = math.radians(_time_to_angle_static(h_now, m_now))
+    hand_width = max(3, size // 60)
+    hx = cx + (radius * 0.45) * math.cos(h_angle)
+    hy = cy - (radius * 0.45) * math.sin(h_angle)
+    canvas.create_line(cx, cy, hx, hy, fill="white", width=hand_width, capstyle=tk.ROUND)
+
+    # 長針（分針）— 短針と同じ太さ
+    m_angle = math.radians(90 - m_now * 6)
+    mx = cx + (radius * 0.65) * math.cos(m_angle)
+    my = cy - (radius * 0.65) * math.sin(m_angle)
+    canvas.create_line(cx, cy, mx, my, fill="#cccccc", width=hand_width, capstyle=tk.ROUND)
+
+    # 中心の点
+    dot_r = max(3, size // 60)
+    canvas.create_oval(cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r, fill="white", outline="")
+
+    # パターン3: セッション使い切り + 追加OFF → グレーアウト
+    if dead:
+        canvas.create_oval(cx - radius + 5, cy - radius + 5,
+                           cx + radius - 5, cy + radius - 5,
+                           fill="#444444", outline="", stipple="gray50")
+        font_size = max(9, size // 23)
+        canvas.create_text(cx, cy, text=i18n.t("clock_session_exhausted"),
+                           fill="white", font=(config.FONT_FAMILY, font_size, "bold"))
 
 _LANG_OPTIONS = [("English", "en"), ("日本語", "ja")]
 _LANG_DISPLAY = {code: name for name, code in _LANG_OPTIONS}
@@ -40,6 +194,13 @@ class App(tk.Tk):
         self._dash_since = self._dash_until = None
         self._analysis_since = self._analysis_until = None
         self._activity_since = self._activity_until = None
+
+        # 残量タブ用
+        self._remaining_data = None
+        self._clock_timer_id = None
+
+        # アクティビティ更新抑制用
+        self._pending_usage_update = None
 
         style = ttk.Style()
         style.configure("TNotebook.Tab", font=config.FONT)
@@ -65,18 +226,22 @@ class App(tk.Tk):
     def _build_notebook(self):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.tab_remaining = ttk.Frame(self.notebook)
         self.tab_dashboard = ttk.Frame(self.notebook)
         self.tab_analysis = ttk.Frame(self.notebook)
         self.tab_activity = ttk.Frame(self.notebook)
         self.tab_settings = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_remaining, text=i18n.t("tab_remaining"))
         self.notebook.add(self.tab_dashboard, text=i18n.t("tab_dashboard"))
         self.notebook.add(self.tab_analysis, text=i18n.t("tab_analysis"))
         self.notebook.add(self.tab_activity, text=i18n.t("tab_activity"))
         self.notebook.add(self.tab_settings, text=i18n.t("tab_settings"))
+        self._build_remaining_tab()
         self._build_dashboard_tab()
         self._build_analysis_tab()
         self._build_activity_tab()
         self._build_settings_tab()
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def _build_status_bar(self):
         self.status_var = tk.StringVar(value="Ready")
@@ -90,6 +255,413 @@ class App(tk.Tk):
             self.update_idletasks()
         except Exception:
             pass
+
+    # ════════════════════════════════════════════
+    # 残量タブ
+    # ════════════════════════════════════════════
+    def _build_remaining_tab(self):
+        p = self.tab_remaining
+
+        # 上部バー: 最終更新時刻(左) + 更新ボタン(右)
+        top_bar = tk.Frame(p, bg=config.BG_COLOR)
+        top_bar.pack(fill=tk.X, padx=10, pady=(5, 0))
+        self._rem_last_update = tk.Label(
+            top_bar, text="", font=config.FONT_SMALL,
+            bg=config.BG_COLOR, fg="#999999", anchor="w"
+        )
+        self._rem_last_update.pack(side=tk.LEFT, padx=5)
+        self._rem_refresh_btn = tk.Button(
+            top_bar, text=i18n.t("btn_remaining_refresh"), font=config.FONT,
+            bg=config.ACCENT_COLOR, fg="white", relief=tk.FLAT,
+            command=self._on_remaining_refresh
+        )
+        self._rem_refresh_btn.pack(side=tk.RIGHT, padx=5)
+
+        # ── 2カラム grid レイアウト ──
+        grid = tk.Frame(p, bg=config.BG_COLOR)
+        grid.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+        grid.rowconfigure(0, weight=1)
+        grid.rowconfigure(1, weight=0)  # 区切り線
+        grid.rowconfigure(2, weight=0)
+        grid.rowconfigure(3, weight=0)
+
+        # ═══ 上段左: 時計盤 + セッション情報 ═══
+        top_left = tk.Frame(grid, bg=config.BG_COLOR)
+        top_left.grid(row=0, column=0, sticky="", padx=5, pady=5)
+
+        self._clock_size = 300
+        self._clock_canvas = tk.Canvas(
+            top_left, width=self._clock_size, height=self._clock_size,
+            bg=config.BG_COLOR, highlightthickness=0
+        )
+        self._clock_canvas.pack()
+
+        # セッション (5h) テキスト — 時計盤の下、中央揃え
+        self._rem_session_frame = tk.Frame(top_left, bg=config.BG_COLOR)
+        self._rem_session_frame.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(self._rem_session_frame, text=i18n.t("session_5h"),
+                 font=config.FONT_BOLD, bg=config.BG_COLOR, fg="#555555",
+                 anchor="center").pack(fill=tk.X)
+        self._rem_session_pct = tk.Label(self._rem_session_frame, text="--",
+                                          font=(config.FONT_FAMILY, 18, "bold"),
+                                          bg=config.BG_COLOR, fg="#888888", anchor="center")
+        self._rem_session_pct.pack(fill=tk.X)
+        self._rem_session_reset = tk.Label(self._rem_session_frame, text="",
+                                            font=config.FONT, bg=config.BG_COLOR,
+                                            fg="#888888", anchor="center")
+        self._rem_session_reset.pack(fill=tk.X)
+
+        # ═══ 上段右: ミニグラフ + 週間情報 ═══
+        top_right = tk.Frame(grid, bg=config.BG_COLOR)
+        top_right.grid(row=0, column=1, sticky="new", padx=5, pady=5)
+
+        self._pace_graph = tk.Canvas(
+            top_right, height=self._clock_size,
+            bg="#2c2c2c", highlightthickness=1, highlightbackground="#555555"
+        )
+        self._pace_graph.pack(fill=tk.X)
+
+        # 週間 (全モデル) テキスト — グラフの下
+        self._rem_weekly_frame = tk.Frame(top_right, bg=config.BG_COLOR)
+        self._rem_weekly_frame.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(self._rem_weekly_frame, text=i18n.t("weekly_all"),
+                 font=config.FONT_BOLD, bg=config.BG_COLOR, fg="#555555",
+                 anchor="center").pack(fill=tk.X)
+        self._rem_weekly_pct = tk.Label(self._rem_weekly_frame, text="--",
+                                         font=(config.FONT_FAMILY, 18, "bold"),
+                                         bg=config.BG_COLOR, fg="#888888", anchor="center")
+        self._rem_weekly_pct.pack(fill=tk.X)
+        self._rem_weekly_reset = tk.Label(self._rem_weekly_frame, text="",
+                                           font=config.FONT, bg=config.BG_COLOR,
+                                           fg="#888888", anchor="center")
+        self._rem_weekly_reset.pack(fill=tk.X)
+        self._rem_weekly_digital = tk.Label(self._rem_weekly_frame, text="",
+                                             font=config.FONT, bg=config.BG_COLOR,
+                                             fg="#888888", anchor="center")
+        self._rem_weekly_digital.pack(fill=tk.X)
+        self._pace_warn_label = tk.Label(
+            self._rem_weekly_frame, text="", font=(config.FONT_FAMILY, 9),
+            bg=config.BG_COLOR, fg="#888888", anchor="center"
+        )
+        self._pace_warn_label.pack(fill=tk.X, pady=(2, 0))
+
+        # ═══ 区切り線 ═══
+        sep = tk.Frame(grid, bg="#cccccc", height=1)
+        sep.grid(row=1, column=0, columnspan=2, sticky="ew", padx=5, pady=(8, 4))
+
+        # ═══ 下段左: 追加使用量 ═══
+        self._rem_extra_frame = tk.Frame(grid, bg=config.BG_COLOR)
+        self._rem_extra_frame.grid(row=2, column=0, sticky="", padx=5, pady=(4, 0))
+        self._rem_extra_label = tk.Label(self._rem_extra_frame, text=i18n.t("extra_usage"),
+                 font=config.FONT_BOLD, bg=config.BG_COLOR, fg="#555555",
+                 anchor="center")
+        self._rem_extra_label.pack(fill=tk.X)
+        self._rem_extra_pct = tk.Label(self._rem_extra_frame, text="--",
+                                        font=(config.FONT_FAMILY, 16, "bold"),
+                                        bg=config.BG_COLOR, fg="#888888", anchor="center")
+        self._rem_extra_pct.pack(fill=tk.X)
+
+        # ═══ 下段右: 週間 (Sonnet) ═══
+        self._rem_sonnet_frame = tk.Frame(grid, bg=config.BG_COLOR)
+        self._rem_sonnet_frame.grid(row=2, column=1, sticky="", padx=5, pady=(4, 0))
+        tk.Label(self._rem_sonnet_frame, text=i18n.t("weekly_sonnet"),
+                 font=config.FONT_BOLD, bg=config.BG_COLOR, fg="#555555",
+                 anchor="center").pack(fill=tk.X)
+        self._rem_sonnet_pct = tk.Label(self._rem_sonnet_frame, text="--",
+                                         font=(config.FONT_FAMILY, 16, "bold"),
+                                         bg=config.BG_COLOR, fg="#888888", anchor="center")
+        self._rem_sonnet_pct.pack(fill=tk.X)
+
+        # ═══ キャラクター (下部中央) ═══
+        self._char_photo = None
+        char_path = Path(__file__).parent / "icons" / "tss.png"
+        if char_path.exists():
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(char_path).convert("RGBA")
+                img = img.resize((60, 60), Image.LANCZOS)
+                self._char_photo = ImageTk.PhotoImage(img)
+                char_label = tk.Label(grid, image=self._char_photo, bg=config.BG_COLOR)
+                char_label.grid(row=3, column=0, columnspan=2, pady=(5, 0))
+            except Exception:
+                pass
+
+        # 待機中メッセージ（初期表示用、上段右に配置）
+        self._rem_no_data = tk.Label(top_right, text=i18n.t("remaining_no_data"),
+                                      font=config.FONT, bg=config.BG_COLOR, fg="#999999")
+        self._rem_no_data.pack(fill=tk.X, pady=5)
+
+        # 初期描画（時計のみ、データなし）
+        self._draw_clock_face()
+        self._start_clock_timer()
+
+    def _on_remaining_refresh(self):
+        """残量タブの更新ボタン押下時。"""
+        self._rem_refresh_btn.config(state=tk.DISABLED)
+        if self._usage_api_test_callback:
+            self._usage_api_test_callback()
+        # 3秒後にボタンを再有効化（連打防止）
+        self.after(3000, lambda: self._rem_refresh_btn.config(state=tk.NORMAL))
+
+    def _draw_clock_face(self):
+        """アナログ時計盤を描画する（共通関数を呼び出す）。"""
+        draw_clock_on_canvas(self._clock_canvas, self._clock_size, self._remaining_data)
+
+    def _start_clock_timer(self):
+        """毎分時計盤を更新するタイマーを開始する。"""
+        self._draw_clock_face()
+        self._clock_timer_id = self.after(60000, self._start_clock_timer)
+
+    def update_remaining_tab(self, data: Optional[dict]):
+        """Usage APIデータで残量タブを更新する。"""
+        if data is None:
+            return
+        self._remaining_data = data
+        self._draw_clock_face()
+
+        # 最終更新時刻を更新
+        now_jst = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=9)
+        self._rem_last_update.config(
+            text=i18n.t("last_update", time=now_jst.strftime('%H:%M:%S'))
+        )
+
+        fh = data.get("five_hour_util")
+        sd = data.get("seven_day_util")
+        sn = data.get("seven_day_sonnet_util")
+        ee = data.get("extra_usage_is_enabled", False)
+        eu = data.get("extra_usage_util")
+        fr = data.get("five_hour_resets_at")
+        sr = data.get("seven_day_resets_at")
+
+        has_data = any(v is not None for v in [fh, sd, sn])
+        self._rem_no_data.pack_forget() if has_data else self._rem_no_data.pack(fill=tk.X, pady=5)
+
+        is_exhausted = fh is not None and fh >= 100
+
+        # ── セッション (5h) ──
+        if fh is not None:
+            if is_exhausted:
+                self._rem_session_pct.config(
+                    text=i18n.t("clock_session_exhausted"),
+                    fg="#e74c3c", font=(config.FONT_FAMILY, 14, "bold")
+                )
+                self._rem_session_reset.config(text="")
+            else:
+                rem = max(0.0, 100.0 - fh)
+                c = config.get_remaining_color(rem, "session")
+                self._rem_session_pct.config(
+                    text=i18n.t("remaining_pct", value=f"{rem:.0f}"),
+                    fg=c, font=(config.FONT_FAMILY, 18, "bold")
+                )
+                if fr:
+                    self._rem_session_reset.config(text=self._format_reset_label(fr))
+        else:
+            self._rem_session_pct.config(text="--", fg="#888888",
+                                          font=(config.FONT_FAMILY, 18, "bold"))
+            self._rem_session_reset.config(text="")
+
+        # ── 週間 (全モデル) ──
+        if sd is not None:
+            rem = max(0.0, 100.0 - sd)
+            c = config.get_remaining_color(rem, "session")
+            self._rem_weekly_pct.config(
+                text=i18n.t("remaining_pct", value=f"{rem:.0f}"), fg=c
+            )
+            if sr:
+                self._rem_weekly_reset.config(text=self._format_reset_label(sr))
+                self._rem_weekly_digital.config(text=self._format_reset_digital(sr))
+        else:
+            self._rem_weekly_pct.config(text="--", fg="#888888")
+            self._rem_weekly_reset.config(text="")
+            self._rem_weekly_digital.config(text="")
+
+        # ── 週間 (Sonnet) ──
+        if sn is not None:
+            rem = max(0.0, 100.0 - sn)
+            c = config.get_remaining_color(rem, "session")
+            self._rem_sonnet_pct.config(
+                text=i18n.t("remaining_pct", value=f"{rem:.0f}"), fg=c
+            )
+        else:
+            self._rem_sonnet_pct.config(text="--", fg="#888888")
+
+        # ── 追加使用量 ──
+        if ee:
+            self._rem_extra_frame.grid()
+            if is_exhausted:
+                # セッション枯渇時: 追加使用量を大きく目立たせる
+                self._rem_extra_pct.config(font=(config.FONT_FAMILY, 20, "bold"))
+            else:
+                self._rem_extra_pct.config(font=(config.FONT_FAMILY, 16, "bold"))
+
+            if eu is None:
+                self._rem_extra_pct.config(text=i18n.t("extra_unlimited"),
+                                            fg=config.REMAINING_COLOR_GREEN)
+            else:
+                rem = max(0.0, 100.0 - eu)
+                c = config.get_remaining_color(rem, "extra")
+                self._rem_extra_pct.config(
+                    text=i18n.t("remaining_pct", value=f"{rem:.0f}"), fg=c
+                )
+        else:
+            self._rem_extra_frame.grid()
+            self._rem_extra_pct.config(
+                text=i18n.t("extra_unused"), fg="#888888",
+                font=(config.FONT_FAMILY, 16, "bold")
+            )
+
+        # ミニグラフ更新
+        self._draw_pace_graph(data)
+
+    def _draw_pace_graph(self, data: dict):
+        """週間消費ペースのミニグラフを描画する。"""
+        canvas = self._pace_graph
+        canvas.update_idletasks()
+        canvas.delete("all")
+        cw = canvas.winfo_width()
+        if cw < 100:
+            cw = 600  # 初回描画時のフォールバック
+        ch = int(canvas.cget("height"))
+        pad_l, pad_r, pad_t, pad_b = 45, 80, 20, 30
+        gw = cw - pad_l - pad_r
+        gh = ch - pad_t - pad_b
+
+        sr = data.get("seven_day_resets_at")
+        sd_util = data.get("seven_day_util")
+        if sd_util is None:
+            return
+
+        remaining_pct = max(0.0, 100.0 - sd_util)
+
+        # リセットまでの残り日数
+        days_remaining = 7.0
+        dt_reset = None
+        if sr:
+            try:
+                ts = sr[:19]
+                fmt = '%Y-%m-%dT%H:%M:%S' if 'T' in ts else '%Y-%m-%d %H:%M:%S'
+                dt_reset = datetime.strptime(ts, fmt)
+                delta = dt_reset - datetime.now(timezone.utc).replace(tzinfo=None)
+                days_remaining = max(0.01, delta.total_seconds() / 86400)
+            except Exception:
+                pass
+
+        days_elapsed = 7.0 - days_remaining
+
+        # Y軸グリッド（0%, 50%, 100%）
+        for pct_val in (0, 50, 100):
+            y = pad_t + gh - (pct_val / 100.0) * gh
+            canvas.create_line(pad_l, y, pad_l + gw, y, fill="#444444", width=1, dash=(2, 4))
+            canvas.create_text(pad_l - 8, y, text=f"{pct_val}%",
+                               fill="#999999", font=(config.FONT_FAMILY, 10), anchor="e")
+
+        # X軸: 曜日ラベル（リセット起点で7日間）
+        weekday_keys = ["weekday_mon", "weekday_tue", "weekday_wed",
+                        "weekday_thu", "weekday_fri", "weekday_sat", "weekday_sun"]
+        if dt_reset:
+            reset_jst = dt_reset + timedelta(hours=9)
+            start_jst = reset_jst - timedelta(days=7)
+        else:
+            now_jst = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=9)
+            start_jst = now_jst - timedelta(days=days_elapsed)
+
+        for d in range(7):
+            day_dt = start_jst + timedelta(days=d)
+            wdkey = weekday_keys[day_dt.weekday()]
+            x = pad_l + (d / 7.0) * gw
+            canvas.create_text(x, ch - 6, text=i18n.t(wdkey),
+                               fill="#999999", font=(config.FONT_FAMILY, 9), anchor="s")
+
+        # 基準ライン（100%→0%、明るいグレー太線）
+        x_start = pad_l
+        y_start = pad_t
+        x_end = pad_l + gw
+        y_end = pad_t + gh
+        canvas.create_line(x_start, y_start, x_end, y_end,
+                           fill="#aaaaaa", width=2)
+        canvas.create_text(x_end + 4, y_end - 6, text=i18n.t("pace_label_ideal"),
+                           fill="#aaaaaa", font=(config.FONT_FAMILY, 10), anchor="w")
+
+        # 基準値（理想ペースでの残量）
+        baseline = max(0.0, 100.0 * (1.0 - days_elapsed / 7.0))
+
+        # 色判定
+        if remaining_pct >= baseline * 1.10:
+            line_color = config.REMAINING_COLOR_BLUE
+            warn_key = "pace_ok"
+        elif remaining_pct >= baseline * 0.95:
+            line_color = config.REMAINING_COLOR_YELLOW
+            warn_key = "pace_warn"
+        else:
+            line_color = config.REMAINING_COLOR_RED
+            warn_key = "pace_danger"
+
+        # 実消費ライン：始点(100%) → 終点(今の残量%) の直線1本
+        now_x = pad_l + (days_elapsed / 7.0) * gw
+        now_y = pad_t + gh - (remaining_pct / 100.0) * gh
+        canvas.create_line(pad_l, pad_t, now_x, now_y,
+                           fill=line_color, width=2)
+
+        # 最新ポイントにマーカー
+        canvas.create_oval(now_x - 5, now_y - 5, now_x + 5, now_y + 5,
+                           fill=line_color, outline="white", width=1)
+        canvas.create_text(now_x, now_y - 14, text=f"{remaining_pct:.0f}%",
+                           fill=line_color, font=(config.FONT_FAMILY, 11, "bold"))
+
+        # 「今」の縦点線 + ラベル
+        canvas.create_line(now_x, pad_t, now_x, pad_t + gh,
+                           fill="#cccccc", width=1, dash=(3, 3))
+        canvas.create_text(now_x, pad_t - 5, text=i18n.t("pace_now"),
+                           fill="#cccccc", font=(config.FONT_FAMILY, 9), anchor="s")
+
+        # 実消費ラベル
+        canvas.create_text(pad_l + gw + 4, pad_t + 6, text=i18n.t("pace_label_actual"),
+                           fill=line_color, font=(config.FONT_FAMILY, 10), anchor="w")
+
+        # 警告テキスト
+        self._pace_warn_label.config(text=i18n.t(warn_key), fg=line_color)
+
+    def _format_reset_label(self, resets_at: str) -> str:
+        """リセット日時をラベル用にフォーマット。"""
+        try:
+            ts = resets_at[:19]
+            fmt = '%Y-%m-%dT%H:%M:%S' if 'T' in ts else '%Y-%m-%d %H:%M:%S'
+            dt_utc = datetime.strptime(ts, fmt)
+            dt_jst = dt_utc + timedelta(hours=9)
+            return i18n.t("reset_at_datetime", dt=dt_jst.strftime('%m/%d %H:%M'))
+        except Exception:
+            return ""
+
+    def _format_reset_digital(self, resets_at: str) -> str:
+        """リセットまでの残り時間をデジタル表示（「2日 14時間後」等）。"""
+        try:
+            ts = resets_at[:19]
+            fmt = '%Y-%m-%dT%H:%M:%S' if 'T' in ts else '%Y-%m-%d %H:%M:%S'
+            dt_reset = datetime.strptime(ts, fmt)
+            delta = dt_reset - datetime.now(timezone.utc).replace(tzinfo=None)
+            if delta.total_seconds() <= 0:
+                return i18n.t("reset_done")
+            total_hours = int(delta.total_seconds() // 3600)
+            days = total_hours // 24
+            hours = total_hours % 24
+            mins = int((delta.total_seconds() % 3600) // 60)
+            if days > 0:
+                return i18n.t("reset_in_days_hours", days=days, hours=hours)
+            elif hours > 0:
+                return i18n.t("reset_in_hours_mins", hours=hours, mins=mins)
+            else:
+                return i18n.t("resets_in_m", m=mins)
+        except Exception:
+            return ""
+
+    def _on_tab_changed(self, event=None):
+        """タブ切替時に保留中の更新を反映する。"""
+        if self._pending_usage_update is not None:
+            data, error = self._pending_usage_update
+            self._pending_usage_update = None
+            self._apply_usage_update(data, error)
 
     # ════════════════════════════════════════════
     # ダッシュボード
@@ -323,6 +895,18 @@ class App(tk.Tk):
         self.lbl_rec_count = tk.Label(inf, text="", font=config.FONT_BOLD, bg=config.BG_COLOR, fg=config.ACCENT_COLOR)
         self.lbl_rec_count.pack(anchor="w", pady=(5, 0))
 
+        # DB容量表示
+        db_row = tk.Frame(inf, bg=config.BG_COLOR)
+        db_row.pack(fill=tk.X, pady=2)
+        tk.Label(db_row, text=i18n.t("db_size_label"), font=config.FONT_BOLD,
+                 bg=config.BG_COLOR, width=22, anchor="w").pack(side=tk.LEFT)
+        self.lbl_db_size = tk.Label(db_row, text="", font=config.FONT,
+                                     bg=config.BG_COLOR, anchor="w")
+        self.lbl_db_size.pack(side=tk.LEFT, padx=5)
+        tk.Button(db_row, text=i18n.t("btn_optimize_db"), font=config.FONT,
+                  bg=config.ACCENT_COLOR, fg="white", relief=tk.FLAT,
+                  command=self._optimize_db).pack(side=tk.LEFT, padx=5)
+
         # 言語設定
         lang_frame = tk.LabelFrame(sf, text=i18n.t("language_label"), font=config.FONT_BOLD, bg=config.BG_COLOR, padx=10, pady=10)
         lang_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
@@ -433,13 +1017,44 @@ class App(tk.Tk):
         if self._usage_api_test_callback:
             self._usage_api_test_callback()
 
+    def _is_user_browsing_activity(self) -> bool:
+        """ユーザーがアクティビティタブを操作中かどうか判定する。"""
+        try:
+            current_tab = self.notebook.index(self.notebook.select())
+            activity_tab_index = self.notebook.index(self.tab_activity)
+            if current_tab != activity_tab_index:
+                return False
+        except Exception:
+            return False
+        # Treeviewにフォーカスがあるか
+        try:
+            if self.focus_get() == self.activity_tree:
+                return True
+        except Exception:
+            pass
+        # スクロール位置が先頭以外か
+        try:
+            first_visible = self.activity_tree.yview()[0]
+            if first_visible > 0.01:
+                return True
+        except Exception:
+            pass
+        return False
+
     def update_usage_status(self, data: Optional[dict], error: Optional[str]):
+        # アクティビティ閲覧中なら更新を保留
+        if data and not error and self._is_user_browsing_activity():
+            self._pending_usage_update = (data, error)
+            return
+        self._apply_usage_update(data, error)
+
+    def _apply_usage_update(self, data: Optional[dict], error: Optional[str]):
         if error:
             self.lbl_api_status.config(text=i18n.t("api_status_error"), fg="#e74c3c")
             self.lbl_api_data.config(text=error, fg="#e74c3c")
             return
         if data:
-            now_jst = database.utc_to_jst_str(datetime.utcnow().isoformat())
+            now_jst = database.utc_to_jst_str(datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
             self.lbl_api_status.config(text=i18n.t("api_status_ok", time=now_jst), fg="#27ae60")
             lines = []
             fh, sd, sn = data.get("five_hour_util"), data.get("seven_day_util"), data.get("seven_day_sonnet_util")
@@ -456,6 +1071,21 @@ class App(tk.Tk):
 
     def _update_rec_count(self):
         self.lbl_rec_count.config(text=i18n.t("db_record_count", count=f"{database.get_total_record_count():,}"))
+        try:
+            size = database.get_db_size_mb()
+            self.lbl_db_size.config(text=f"{size:.2f} MB")
+        except Exception:
+            pass
+
+    def _optimize_db(self):
+        """手動VACUUM実行。"""
+        try:
+            before = database.get_db_size_mb()
+            database.vacuum_db()
+            after = database.get_db_size_mb()
+            self.lbl_db_size.config(text=i18n.t("db_optimized", before=f"{before:.2f}", after=f"{after:.2f}"))
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
 
     def _open_log_folder(self):
         try:

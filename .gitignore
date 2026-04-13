@@ -25,3 +25,9 @@ usage-tracker*.md
 議題_*.md
 
 feasibility_report.md
+Screenshot/
+プロンプト*.md
+*.prompt
+tests/
+*_backup_*.py
+claude_usage_export.csv

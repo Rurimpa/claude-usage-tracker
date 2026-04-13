@@ -5,7 +5,7 @@ import threading
 import logging
 import traceback
 import ctypes
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # ── F-12: コンソールウィンドウを非表示にする ──
@@ -13,6 +13,7 @@ try:
     _console_hwnd = ctypes.windll.kernel32.GetConsoleWindow()
     if _console_hwnd:
         ctypes.windll.user32.ShowWindow(_console_hwnd, 0)  # SW_HIDE
+        ctypes.windll.kernel32.FreeConsole()
 except Exception:
     pass
 
@@ -102,6 +103,8 @@ class UsageTrackerApp:
         self._usage_client = UsageAPIClient()
         self._usage_data = None
         self._mini_widget = None  # F-18: ミニウィジェット
+        self._usage_api_test_callback = None  # ミニウィジェットからも参照
+        self._widget_last_poll = 0  # 連打防止用
 
     def run(self):
         logger.info("Usage Tracker 起動 (v%s)", config.VERSION)
@@ -111,6 +114,7 @@ class UsageTrackerApp:
                      config.SCAN_INTERVAL_SECONDS, config.USAGE_API_INTERVAL_SECONDS)
 
         database.init_db()
+        database.cleanup_old_records()
 
         self._start_gui()
 
@@ -151,6 +155,7 @@ class UsageTrackerApp:
             self.app_gui.set_scan_callback(self._trigger_scan)
             self.app_gui.set_quit_callback(self._quit_all)
             self.app_gui.set_usage_api_test_callback(self._test_usage_api)
+            self._usage_api_test_callback = self._test_usage_api
             logger.info("GUI構築完了")
         except Exception as e:
             _debug(f"_start_gui: エラー {traceback.format_exc()}")
@@ -233,7 +238,7 @@ class UsageTrackerApp:
 
         try:
             database.insert_usage_snapshot(
-                timestamp=datetime.utcnow().isoformat() + "Z",
+                timestamp=datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
                 five_hour_util=data.get("five_hour_util"),
                 seven_day_util=data.get("seven_day_util"),
                 seven_day_sonnet_util=data.get("seven_day_sonnet_util"),
@@ -248,6 +253,7 @@ class UsageTrackerApp:
 
         if self.app_gui and not self._stop_event.is_set():
             self.app_gui.after(0, self.app_gui.update_usage_status, data, None)
+            self.app_gui.after(0, self.app_gui.update_remaining_tab, data)
             self.app_gui.after(0, self._update_mini_widget)
 
     def _update_tray_from_data(self, data: dict):
@@ -268,27 +274,41 @@ class UsageTrackerApp:
             self.update_tray_icon(max(0.0, 100.0 - five_hour), "session")
 
     def _update_tray_tooltip(self, data: dict):
-        """F-6: ツールチップを%表示で更新。"""
+        """F-6: ツールチップを罫線付きフォーマットで更新。"""
         if not self.tray_icon:
             return
-        parts = []
+        BAR = "━" * 14
+        items = []
         five_hour = data.get("five_hour_util")
+        seven_day = data.get("seven_day_util")
         extra_enabled = data.get("extra_usage_is_enabled", False)
         extra_util = data.get("extra_usage_util")
 
         if five_hour is not None:
             rem = max(0.0, 100.0 - five_hour)
-            parts.append(i18n.t("tray_tooltip_session", value=f"{rem:.0f}"))
+            items.append(i18n.t("tray_tooltip_session", value=f"{rem:.0f}"))
+        if seven_day is not None:
+            rem = max(0.0, 100.0 - seven_day)
+            items.append(i18n.t("tray_tooltip_weekly", value=f"{rem:.0f}"))
         if extra_enabled:
             if extra_util is None:
-                parts.append(i18n.t("tray_tooltip_extra_unlimited"))
+                items.append(i18n.t("tray_tooltip_extra_unlimited"))
             else:
                 rem = max(0.0, 100.0 - extra_util)
-                parts.append(i18n.t("tray_tooltip_extra_pct", value=f"{rem:.0f}"))
+                items.append(i18n.t("tray_tooltip_extra_pct", value=f"{rem:.0f}"))
 
-        tooltip = "Claude Usage Tracker"
-        if parts:
-            tooltip += "\n" + " | ".join(parts)
+        # 罫線付きフォーマット
+        body = "\n\n".join(items)
+        tooltip = f"{BAR}\nClaude Usage Tracker\n\n{body}\n{BAR}"
+
+        # Windows ツールチップは最大128文字
+        if len(tooltip) > 127:
+            tooltip = "Claude Usage Tracker\n\n" + "\n\n".join(items)
+        if len(tooltip) > 127:
+            tooltip = "Claude Usage Tracker\n" + "\n".join(items)
+        if len(tooltip) > 127:
+            tooltip = tooltip[:124] + "..."
+
         try:
             self.tray_icon.title = tooltip
         except Exception:
@@ -301,6 +321,7 @@ class UsageTrackerApp:
                 if data:
                     self._usage_data = data
                     self.app_gui.after(0, self.app_gui.update_usage_status, data, None)
+                    self.app_gui.after(0, self.app_gui.update_remaining_tab, data)
                     self._update_tray_from_data(data)
                     self._update_tray_tooltip(data)
                     self.app_gui.after(0, self._update_mini_widget)
@@ -370,10 +391,9 @@ class UsageTrackerApp:
         self.app_gui.after(0, self._create_tray_popup)
 
     def _create_tray_popup(self):
-        """F-5/F-19/F-20: 使用量ポップアップ（ゲージ拡大+Claudeカラー）。"""
+        """F-5/F-19/F-20: 使用量ポップアップ（縦長レイアウト・時計盤+テキスト+キャラアイコン）。"""
         import tkinter as tk
-        from PIL import ImageTk
-        from icons.gauge import make_gauge_large
+        from gui import draw_clock_on_canvas
 
         BG = "#2c2c2c"
         ACCENT = "#E07B39"
@@ -385,7 +405,7 @@ class UsageTrackerApp:
 
         screen_w = popup.winfo_screenwidth()
         screen_h = popup.winfo_screenheight()
-        popup_w, popup_h = 420, 280
+        popup_w, popup_h = 360, 560
         popup.geometry(f"{popup_w}x{popup_h}+{screen_w - popup_w - 10}+{screen_h - popup_h - 50}")
 
         # タイトルバー（Claudeオレンジ）
@@ -394,26 +414,54 @@ class UsageTrackerApp:
         tk.Label(title_frame, text="  Claude Usage Tracker", font=("Meiryo", 10, "bold"),
                  bg=ACCENT, fg="white", anchor="w", pady=4).pack(fill=tk.X, padx=5)
 
-        # メインコンテンツ
-        content = tk.Frame(popup, bg=BG, padx=8, pady=8)
+        # メインコンテンツ（縦長レイアウト）
+        content = tk.Frame(popup, bg=BG, padx=12, pady=8)
         content.pack(fill=tk.BOTH, expand=True)
 
-        # F-19: 左にゲージ拡大画像
-        gauge_img = make_gauge_large(pct=self._tray_pct, mode=self._tray_mode, size=128)
-        self._popup_photo = ImageTk.PhotoImage(gauge_img)
-        tk.Label(content, image=self._popup_photo, bg=BG).pack(side=tk.LEFT, padx=(4, 12))
+        # 上部: 時計盤 + キャラアイコン（横並び）
+        top_row = tk.Frame(content, bg=BG)
+        top_row.pack(fill=tk.X)
 
-        # 右にテキスト情報
-        right = tk.Frame(content, bg=BG)
-        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 時計盤Canvas
+        clock_size = 180
+        clock_canvas = tk.Canvas(top_row, width=clock_size, height=clock_size,
+                                  bg=BG, highlightthickness=0)
+        clock_canvas.pack(side=tk.LEFT, padx=(0, 8))
+        draw_clock_on_canvas(clock_canvas, clock_size, self._usage_data, show_numbers=True)
+
+        # キャラクター画像（時計盤の右隣）
+        char_path = Path(__file__).parent / "icons" / "tss.png"
+        self._popup_char_photo = None  # 参照保持でGC回避
+        if char_path.exists():
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(char_path).convert("RGBA")
+                img = img.resize((100, 100), Image.LANCZOS)
+                self._popup_char_photo = ImageTk.PhotoImage(img)
+                char_label = tk.Label(top_row, image=self._popup_char_photo,
+                                       bg=BG)
+                char_label.pack(side=tk.LEFT, anchor="s", pady=(0, 5))
+            except Exception:
+                pass
+
+        # 区切り線
+        tk.Frame(content, bg="#555555", height=1).pack(fill=tk.X, pady=(8, 6))
+
+        # テキスト情報エリア
+        info_frame = tk.Frame(content, bg=BG)
+        info_frame.pack(fill=tk.X)
 
         def row(label, value, color="white"):
-            r = tk.Frame(right, bg=BG)
+            r = tk.Frame(info_frame, bg=BG)
             r.pack(fill=tk.X, pady=2)
-            tk.Label(r, text=label, font=("Meiryo", 9), bg=BG,
-                     fg=ACCENT, anchor="w", width=18).pack(side=tk.LEFT)
-            tk.Label(r, text=value, font=("Meiryo", 10, "bold"), bg=BG,
+            tk.Label(r, text=label, font=("Meiryo", 11), bg=BG,
+                     fg=ACCENT, anchor="w").pack(side=tk.LEFT)
+            tk.Label(r, text=value, font=("Meiryo", 12, "bold"), bg=BG,
                      fg=color, anchor="e").pack(side=tk.RIGHT)
+
+        def sub_row(text):
+            tk.Label(info_frame, text=text, font=("Meiryo", 10), bg=BG,
+                     fg="#888888", anchor="e").pack(fill=tk.X, pady=(0, 1))
 
         data = self._usage_data
         if data:
@@ -427,45 +475,57 @@ class UsageTrackerApp:
 
             if fh is not None:
                 rem = max(0.0, 100.0 - fh)
-                c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
+                c = config.get_remaining_color(rem, "session")
                 row(i18n.t("session_5h"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
                 if fr:
                     rs = _format_reset_time(fr)
                     if rs:
-                        row("", rs, "#888888")
+                        sub_row(rs)
             if sd is not None:
                 rem = max(0.0, 100.0 - sd)
-                c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
+                c = config.get_remaining_color(rem, "session")
                 row(i18n.t("weekly_all"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
                 if sr:
                     rs = _format_reset_time(sr)
                     if rs:
-                        row("", rs, "#888888")
+                        sub_row(rs)
             if sn is not None:
                 rem = max(0.0, 100.0 - sn)
-                c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
+                c = config.get_remaining_color(rem, "session")
                 row(i18n.t("weekly_sonnet"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
             if ee:
                 if eu is None:
-                    row(i18n.t("extra_usage"), i18n.t("extra_unlimited"), "#2ecc71")
+                    row(i18n.t("extra_usage"), i18n.t("extra_unlimited"),
+                        config.REMAINING_COLOR_GREEN)
                 else:
                     rem = max(0.0, 100.0 - eu)
-                    c = "#2ecc71" if rem > 50 else "#f1c40f" if rem > 20 else "#e74c3c"
+                    c = config.get_remaining_color(rem, "extra")
                     row(i18n.t("extra_usage"), i18n.t("remaining_pct", value=f"{rem:.0f}"), c)
         else:
-            tk.Label(right, text=i18n.t("api_data_pending"),
-                     font=("Meiryo", 10), bg=BG, fg="#95a5a6").pack(pady=15)
+            tk.Label(info_frame, text=i18n.t("api_data_pending"),
+                     font=("Meiryo", 12), bg=BG, fg="#95a5a6").pack(pady=15)
 
         # フッター
         link = tk.Frame(popup, bg=BG)
         link.pack(fill=tk.X, padx=12, pady=(0, 8))
-        lbl = tk.Label(link, text=f"{i18n.t('open_dashboard')} →", font=("Meiryo", 8),
+        lbl = tk.Label(link, text=f"{i18n.t('open_dashboard')} →", font=("Meiryo", 10),
                        bg=BG, fg=ACCENT, cursor="hand2")
         lbl.pack(anchor="e")
         lbl.bind("<Button-1>", lambda e: (popup.destroy(), self._show_dashboard()))
 
-        auto_close = popup.after(8000, popup.destroy)
-        popup.bind("<Button-1>", lambda e: popup.after_cancel(auto_close) if auto_close else None)
+        auto_close_id = popup.after(8000, popup.destroy)
+
+        def _on_popup_click(e):
+            try:
+                popup.after_cancel(auto_close_id)
+            except Exception:
+                pass
+            try:
+                popup.destroy()
+            except Exception:
+                pass
+
+        popup.bind("<Button-1>", _on_popup_click)
         popup.bind("<FocusOut>", lambda e: popup.destroy())
         popup.focus_set()
 
@@ -487,13 +547,14 @@ class UsageTrackerApp:
             self._create_mini_widget()
 
     def _create_mini_widget(self):
-        """F-18: ミニウィジェット作成。"""
+        """F-18: ミニウィジェット作成（キャラ→時計盤→テキスト 縦配置）。"""
         import tkinter as tk
-        from PIL import ImageTk
-        from icons.gauge import make_gauge_large
+        from gui import draw_clock_on_canvas
 
         BG = "#2c2c2c"
-        ACCENT = "#E07B39"
+        self._widget_clock_size = config.MINI_WIDGET_SIZE
+        sz = self._widget_clock_size
+        pad = max(6, sz // 25)
 
         w = tk.Toplevel(self.app_gui)
         w.overrideredirect(True)
@@ -501,102 +562,258 @@ class UsageTrackerApp:
         w.configure(bg=BG)
         self._mini_widget = w
 
-        frame = tk.Frame(w, bg=BG, padx=8, pady=8)
-        frame.pack()
+        # 外側パディング付きフレーム
+        outer = tk.Frame(w, bg=BG, padx=pad, pady=pad)
+        outer.pack(fill=tk.BOTH, expand=True)
+        self._widget_outer = outer
 
-        # ゲージ画像
-        gauge_img = make_gauge_large(pct=self._tray_pct, mode=self._tray_mode, size=128)
-        self._widget_photo = ImageTk.PhotoImage(gauge_img)
-        self._widget_img_label = tk.Label(frame, image=self._widget_photo, bg=BG)
-        self._widget_img_label.pack(side=tk.LEFT)
+        # ── (1) キャラクター画像（上部中央） ──
+        self._widget_char_photo = None
+        self._widget_char_img_original = None
+        self._widget_char_label = None
+        char_path = Path(__file__).parent / "icons" / "tss.png"
+        if char_path.exists():
+            try:
+                from PIL import Image, ImageTk
+                self._widget_char_img_original = Image.open(char_path).convert("RGBA")
+                char_sz = max(30, sz // 4)
+                img = self._widget_char_img_original.resize(
+                    (char_sz, char_sz), Image.LANCZOS)
+                self._widget_char_photo = ImageTk.PhotoImage(img)
+                self._widget_char_label = tk.Label(
+                    outer, image=self._widget_char_photo, bg=BG)
+                self._widget_char_label.pack(pady=(0, 4))
+            except Exception:
+                pass
 
-        # テキスト
-        text_frame = tk.Frame(frame, bg=BG, padx=8)
-        text_frame.pack(side=tk.LEFT)
+        # ── (2) 時計盤Canvas（中央） ──
+        self._widget_canvas = tk.Canvas(outer, width=sz, height=sz,
+                                         bg=BG, highlightthickness=0)
+        self._widget_canvas.pack(pady=(0, 6))
 
-        # 残量%を計算
-        data = self._usage_data
-        if data:
-            fh = data.get("five_hour_util")
-            if fh is not None and fh >= 100:
-                ee = data.get("extra_usage_is_enabled", False)
-                eu = data.get("extra_usage_util")
-                if ee and eu is not None:
-                    label, pct_val = i18n.t("extra_usage").rstrip(":"), max(0, 100 - eu)
-                elif ee:
-                    label, pct_val = i18n.t("extra_usage").rstrip(":"), 100
-                else:
-                    label, pct_val = i18n.t("session_5h").rstrip(":"), 0
-            elif fh is not None:
-                label, pct_val = i18n.t("session_5h").rstrip(":"), max(0, 100 - fh)
-            else:
-                label, pct_val = "Session", 0
-        else:
-            label, pct_val = "Session", 0
+        # ── (3) テキスト情報（下部・左右分離レイアウト） ──
+        font_sz = max(10, sz // 16)
+        self._widget_text_frame = tk.Frame(outer, bg=BG)
+        self._widget_text_frame.pack(fill=tk.X)
 
-        self._widget_label = tk.Label(text_frame, text=label, font=("Meiryo", 9),
-                                       bg=BG, fg=ACCENT)
-        self._widget_label.pack(anchor="w")
-        self._widget_pct = tk.Label(text_frame, text=f"{pct_val:.0f}%",
-                                     font=("Meiryo", 24, "bold"), bg=BG, fg="white")
-        self._widget_pct.pack(anchor="w")
-        self._widget_sub = tk.Label(text_frame, text="remaining",
-                                     font=("Meiryo", 9), bg=BG, fg="#888888")
-        self._widget_sub.pack(anchor="w")
+        ACCENT_W = "#E07B39"
 
-        # 位置: 画面右下
+        # Session行
+        r1 = tk.Frame(self._widget_text_frame, bg=BG)
+        r1.pack(fill=tk.X, pady=1)
+        self._widget_session_lbl = tk.Label(
+            r1, text="", font=("Meiryo", font_sz), bg=BG,
+            fg=ACCENT_W, anchor="w")
+        self._widget_session_lbl.pack(side=tk.LEFT)
+        self._widget_session_val = tk.Label(
+            r1, text="--", font=("Meiryo", font_sz, "bold"), bg=BG,
+            fg="#888888", anchor="e")
+        self._widget_session_val.pack(side=tk.RIGHT)
+        self._widget_session_row = r1
+
+        # Weekly行
+        r2 = tk.Frame(self._widget_text_frame, bg=BG)
+        r2.pack(fill=tk.X, pady=1)
+        self._widget_weekly_lbl = tk.Label(
+            r2, text="", font=("Meiryo", font_sz), bg=BG,
+            fg=ACCENT_W, anchor="w")
+        self._widget_weekly_lbl.pack(side=tk.LEFT)
+        self._widget_weekly_val = tk.Label(
+            r2, text="--", font=("Meiryo", font_sz, "bold"), bg=BG,
+            fg="#888888", anchor="e")
+        self._widget_weekly_val.pack(side=tk.RIGHT)
+        self._widget_weekly_row = r2
+
+        # Extra行
+        r3 = tk.Frame(self._widget_text_frame, bg=BG)
+        r3.pack(fill=tk.X, pady=1)
+        self._widget_extra_lbl = tk.Label(
+            r3, text="", font=("Meiryo", font_sz), bg=BG,
+            fg=ACCENT_W, anchor="w")
+        self._widget_extra_lbl.pack(side=tk.LEFT)
+        self._widget_extra_val = tk.Label(
+            r3, text="", font=("Meiryo", font_sz, "bold"), bg=BG,
+            fg="#888888", anchor="e")
+        self._widget_extra_val.pack(side=tk.RIGHT)
+        self._widget_extra_row = r3
+
+        # 初期描画
+        draw_clock_on_canvas(self._widget_canvas, sz, self._usage_data,
+                             show_numbers=(sz >= 120))
+        self._update_widget_text()
+
+        # 位置: 画面右下（自動サイズ計算）
         w.update_idletasks()
-        ww, wh = w.winfo_width(), w.winfo_height()
-        x = w.winfo_screenwidth() - ww - 20
-        y = w.winfo_screenheight() - wh - 80
-        w.geometry(f"+{x}+{y}")
+        total_w = w.winfo_reqwidth()
+        total_h = w.winfo_reqheight()
+        x = w.winfo_screenwidth() - total_w - 20
+        y = w.winfo_screenheight() - total_h - 80
+        w.geometry(f"{total_w}x{total_h}+{x}+{y}")
 
         # ドラッグ移動
         def start_drag(event):
             w._drag_x = event.x
             w._drag_y = event.y
+            w._dragged = False
 
         def on_drag(event):
-            x = w.winfo_x() + event.x - w._drag_x
-            y = w.winfo_y() + event.y - w._drag_y
-            w.geometry(f"+{x}+{y}")
+            w._dragged = True
+            nx = w.winfo_x() + event.x - w._drag_x
+            ny = w.winfo_y() + event.y - w._drag_y
+            w.geometry(f"+{nx}+{ny}")
+
+        def on_release(event):
+            if not getattr(w, '_dragged', False):
+                # ドラッグなし = クリック → Usage APIポーリング
+                self._widget_poll_usage()
 
         w.bind("<ButtonPress-1>", start_drag)
         w.bind("<B1-Motion>", on_drag)
+        w.bind("<ButtonRelease-1>", on_release)
 
         # 右クリックで閉じる
         w.bind("<Button-3>", lambda e: self._do_toggle_mini_widget())
 
+        # ホイールで拡縮
+        def on_mousewheel(event):
+            delta = 20 if event.delta > 0 else -20
+            new_size = max(120, min(400, self._widget_clock_size + delta))
+            if new_size == self._widget_clock_size:
+                return
+            self._widget_clock_size = new_size
+            config.MINI_WIDGET_SIZE = new_size
+            config.save_settings()
+            self._resize_mini_widget(new_size)
+
+        w.bind("<MouseWheel>", on_mousewheel)
+
+    def _resize_mini_widget(self, new_size):
+        """ミニウィジェットのサイズを変更する（ホイール拡縮対応）。"""
+        from gui import draw_clock_on_canvas
+
+        sz = new_size
+        pad = max(6, sz // 25)
+
+        # 外側パディング更新
+        self._widget_outer.config(padx=pad, pady=pad)
+
+        # キャラクター画像リサイズ
+        if self._widget_char_img_original and self._widget_char_label:
+            try:
+                from PIL import Image, ImageTk
+                char_sz = max(30, sz // 4)
+                img = self._widget_char_img_original.resize(
+                    (char_sz, char_sz), Image.LANCZOS)
+                self._widget_char_photo = ImageTk.PhotoImage(img)
+                self._widget_char_label.config(image=self._widget_char_photo)
+            except Exception:
+                pass
+
+        # Clock canvas リサイズ
+        self._widget_canvas.config(width=sz, height=sz)
+
+        # フォントリサイズ（ラベル + 値）
+        font_sz = max(10, sz // 16)
+        for lbl in (self._widget_session_lbl, self._widget_weekly_lbl, self._widget_extra_lbl):
+            lbl.config(font=("Meiryo", font_sz))
+        for val in (self._widget_session_val, self._widget_weekly_val, self._widget_extra_val):
+            val.config(font=("Meiryo", font_sz, "bold"))
+
+        # ラベルテキスト更新（サイズに応じた長短切替）
+        self._update_widget_text()
+
+        # 時計盤再描画
+        draw_clock_on_canvas(self._widget_canvas, sz, self._usage_data,
+                             show_numbers=(sz >= 120))
+
+        # ウィンドウジオメトリ自動更新
+        self._mini_widget.update_idletasks()
+        total_w = self._mini_widget.winfo_reqwidth()
+        total_h = self._mini_widget.winfo_reqheight()
+        self._mini_widget.geometry(f"{total_w}x{total_h}")
+
+    def _update_widget_text(self):
+        """ミニウィジェットのテキスト情報を更新する（i18n対応・左右分離レイアウト）。"""
+        if not hasattr(self, '_widget_session_lbl') or not self._widget_session_lbl:
+            return
+
+        sz = self._widget_clock_size
+        # サイズ160px以上: フルラベル、未満: 略称
+        if sz >= 160:
+            s_pre = i18n.t("widget_session") + ":"
+            w_pre = i18n.t("widget_weekly") + ":"
+            e_pre = i18n.t("widget_extra") + ":"
+        else:
+            s_pre = "S:"
+            w_pre = "W:"
+            e_pre = "E:"
+
+        data = self._usage_data
+        if not data:
+            self._widget_session_lbl.config(text=s_pre)
+            self._widget_session_val.config(text="--", fg="#888888")
+            self._widget_weekly_lbl.config(text=w_pre)
+            self._widget_weekly_val.config(text="--", fg="#888888")
+            self._widget_extra_lbl.config(text="")
+            self._widget_extra_val.config(text="")
+            return
+
+        fh = data.get("five_hour_util")
+        sd = data.get("seven_day_util")
+        ee = data.get("extra_usage_is_enabled", False)
+        eu = data.get("extra_usage_util")
+
+        self._widget_session_lbl.config(text=s_pre)
+        if fh is not None:
+            rem = max(0.0, 100.0 - fh)
+            c = config.get_remaining_color(rem, "session")
+            self._widget_session_val.config(text=f"{rem:.0f}%", fg=c)
+        else:
+            self._widget_session_val.config(text="--", fg="#888888")
+
+        self._widget_weekly_lbl.config(text=w_pre)
+        if sd is not None:
+            rem = max(0.0, 100.0 - sd)
+            c = config.get_remaining_color(rem, "session")
+            self._widget_weekly_val.config(text=f"{rem:.0f}%", fg=c)
+        else:
+            self._widget_weekly_val.config(text="--", fg="#888888")
+
+        if ee:
+            self._widget_extra_lbl.config(text=e_pre)
+            if eu is None:
+                self._widget_extra_val.config(
+                    text="∞", fg=config.REMAINING_COLOR_GREEN)
+            else:
+                rem = max(0.0, 100.0 - eu)
+                c = config.get_remaining_color(rem, "extra")
+                self._widget_extra_val.config(text=f"{rem:.0f}%", fg=c)
+        else:
+            self._widget_extra_lbl.config(text="")
+            self._widget_extra_val.config(text="")
+
+    def _widget_poll_usage(self):
+        """ミニウィジェット左クリック: Usage APIを即座にポーリング（3秒連打防止）。"""
+        import time
+        now = time.time()
+        if now - self._widget_last_poll < 3:
+            return
+        self._widget_last_poll = now
+        if self._usage_api_test_callback:
+            self._usage_api_test_callback()
+        elif hasattr(self, '_test_usage_api'):
+            self._test_usage_api()
+
     def _update_mini_widget(self):
-        """ミニウィジェットのゲージとテキストを更新する。"""
+        """ミニウィジェットの時計盤とテキスト情報を更新する。"""
         if not self._mini_widget or not self._mini_widget.winfo_exists():
             return
         try:
-            from PIL import ImageTk
-            from icons.gauge import make_gauge_large
-
-            gauge_img = make_gauge_large(pct=self._tray_pct, mode=self._tray_mode, size=128)
-            self._widget_photo = ImageTk.PhotoImage(gauge_img)
-            self._widget_img_label.config(image=self._widget_photo)
-
-            data = self._usage_data
-            if data:
-                fh = data.get("five_hour_util")
-                if fh is not None and fh >= 100:
-                    ee = data.get("extra_usage_is_enabled", False)
-                    eu = data.get("extra_usage_util")
-                    if ee and eu is not None:
-                        label, pct_val = i18n.t("extra_usage").rstrip(":"), max(0, 100 - eu)
-                    elif ee:
-                        label, pct_val = i18n.t("extra_usage").rstrip(":"), 100
-                    else:
-                        label, pct_val = i18n.t("session_5h").rstrip(":"), 0
-                elif fh is not None:
-                    label, pct_val = i18n.t("session_5h").rstrip(":"), max(0, 100 - fh)
-                else:
-                    return
-                self._widget_label.config(text=label)
-                self._widget_pct.config(text=f"{pct_val:.0f}%")
+            from gui import draw_clock_on_canvas
+            sz = self._widget_clock_size
+            draw_clock_on_canvas(self._widget_canvas, sz, self._usage_data,
+                                 show_numbers=(sz >= 120))
+            self._update_widget_text()
         except Exception:
             pass
 
@@ -651,7 +868,7 @@ def _format_reset_time(resets_at: str) -> str:
         ts = resets_at[:19]
         fmt = '%Y-%m-%dT%H:%M:%S' if 'T' in ts else '%Y-%m-%d %H:%M:%S'
         dt_reset = datetime.strptime(ts, fmt)
-        delta = dt_reset - datetime.utcnow()
+        delta = dt_reset - datetime.now(timezone.utc).replace(tzinfo=None)
         if delta.total_seconds() <= 0:
             return i18n.t("reset_done")
         h = int(delta.total_seconds() // 3600)

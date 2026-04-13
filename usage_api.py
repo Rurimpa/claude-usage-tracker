@@ -14,7 +14,7 @@ import logging
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
@@ -153,7 +153,7 @@ class UsageAPIClient:
                 return None
             data, err, status = _api_request(USAGE_API_URL, token)
 
-        self._last_fetch_time = datetime.utcnow().isoformat() + "Z"
+        self._last_fetch_time = datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
         if data is None:
             if status in (401, 403):
