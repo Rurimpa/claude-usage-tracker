@@ -658,24 +658,16 @@ class UsageTrackerApp:
         y = w.winfo_screenheight() - total_h - 80
         w.geometry(f"{total_w}x{total_h}+{x}+{y}")
 
-        # ドラッグ移動（画面絶対座標ベース、5px閾値付き）
+        # ドラッグ移動
         def start_drag(event):
-            w._drag_start_x = w.winfo_pointerx()
-            w._drag_start_y = w.winfo_pointery()
-            w._drag_win_x = w.winfo_x()
-            w._drag_win_y = w.winfo_y()
+            w._drag_x = event.x
+            w._drag_y = event.y
             w._dragged = False
 
         def on_drag(event):
-            cur_x = w.winfo_pointerx()
-            cur_y = w.winfo_pointery()
-            dx = cur_x - w._drag_start_x
-            dy = cur_y - w._drag_start_y
-            if not w._dragged and (abs(dx) < 5 and abs(dy) < 5):
-                return
             w._dragged = True
-            nx = w._drag_win_x + dx
-            ny = w._drag_win_y + dy
+            nx = w.winfo_x() + event.x - w._drag_x
+            ny = w.winfo_y() + event.y - w._drag_y
             w.geometry(f"+{nx}+{ny}")
 
         def on_release(event):

@@ -1,11 +1,11 @@
 [Setup]
 AppName=Claude Usage Tracker
-AppVersion=3.5.5
+AppVersion=3.5.6
 AppPublisher=OpalTools
 DefaultDirName={localappdata}\ClaudeUsageTracker
 DefaultGroupName=Claude Usage Tracker
 OutputDir=output
-OutputBaseFilename=ClaudeUsageTracker_Setup_v3.5.5
+OutputBaseFilename=ClaudeUsageTracker_Setup_v3.5.6
 SetupIconFile=icons\app.ico
 Compression=lzma2
 SolidCompression=yes

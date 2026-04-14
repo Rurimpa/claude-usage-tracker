@@ -9,7 +9,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # === Version ===
-VERSION = "3.5.5"
+VERSION = "3.5.6"
 
 # === Language ===
 LANGUAGE = "en"  # "en" or "ja"
